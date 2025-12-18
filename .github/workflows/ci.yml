@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        node-version: [18, 20, 22]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+  # Verify the plugin structure is correct
+  verify-plugin:
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Verify plugin structure
+        run: |
+          echo "Checking plugin structure..."
+          test -f .claude-plugin/plugin.json || (echo "Missing plugin.json" && exit 1)
+          test -f dist/hooks/hooks.json || (echo "Missing hooks.json" && exit 1)
+          test -f dist/hooks/session-start.js || (echo "Missing session-start.js" && exit 1)
+          test -f dist/hooks/post-tool-use.js || (echo "Missing post-tool-use.js" && exit 1)
+          test -f dist/hooks/stop.js || (echo "Missing stop.js" && exit 1)
+          test -d commands || (echo "Missing commands directory" && exit 1)
+          echo "Plugin structure verified!"

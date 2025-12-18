@@ -1,0 +1,28 @@
+# Source files (dist is included)
+src/
+
+# Config files
+tsconfig.json
+tsup.config.ts
+.eslintrc*
+.prettierrc*
+
+# Test files
+**/*.test.ts
+**/__tests__/
+
+# Development
+.github/
+.vscode/
+.idea/
+
+# Git
+.git/
+.gitignore
+
+# Misc
+*.log
+*.md
+!README.md
+.DS_Store
+node_modules/

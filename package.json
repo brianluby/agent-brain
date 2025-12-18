@@ -1,0 +1,59 @@
+{
+  "name": "memvid-mind",
+  "version": "1.0.0",
+  "description": "Give Claude Code photographic memory in ONE portable file",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsup && cp src/hooks/hooks.json dist/hooks/",
+    "dev": "tsup --watch",
+    "lint": "eslint src --ext .ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build"
+  },
+  "files": [
+    "dist",
+    "skills",
+    "commands",
+    ".claude-plugin"
+  ],
+  "keywords": [
+    "claude",
+    "claude-code",
+    "claude-code-plugin",
+    "anthropic",
+    "memory",
+    "ai-memory",
+    "context-persistence",
+    "memvid",
+    "portable-memory",
+    "persistent-memory",
+    "llm-memory",
+    "ai-assistant"
+  ],
+  "author": "Memvid <hello@memvid.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Memvid/memvid-mind.git"
+  },
+  "homepage": "https://memvid.com",
+  "bugs": {
+    "url": "https://github.com/Memvid/memvid-mind/issues"
+  },
+  "dependencies": {
+    "@memvid/sdk": "^2.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "eslint": "^9.0.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
