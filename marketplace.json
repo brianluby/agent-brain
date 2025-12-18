@@ -1,0 +1,19 @@
+{
+  "name": "memvid",
+  "description": "Official Memvid plugins for Claude Code",
+  "owner": {
+    "name": "Memvid",
+    "url": "https://memvid.com"
+  },
+  "plugins": [
+    {
+      "name": "memvid-mind",
+      "description": "Give Claude Code photographic memory in ONE portable file",
+      "version": "1.0.1",
+      "source": {
+        "source": "github",
+        "repo": "memvid/memvid-mind"
+      }
+    }
+  ]
+}
