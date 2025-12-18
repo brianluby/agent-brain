@@ -1,12 +1,12 @@
 {
   "name": "memvid-mind",
   "description": "Give Claude Code photographic memory in ONE portable file. Share, version, and transfer your Claude's brain.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": {
     "name": "Memvid",
     "url": "https://memvid.com"
   },
-  "repository": "https://github.com/Memvid/memvid-mind",
+  "repository": "https://github.com/memvid/memvid-mind",
   "homepage": "https://memvid.com",
   "license": "MIT",
   "hooks": ["./dist/hooks/hooks.json"],
