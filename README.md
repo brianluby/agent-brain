@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🧠 Claude Mind
+# 🧠 Claude Brain
 
 ### **Claude Code finally remembers.**
 
