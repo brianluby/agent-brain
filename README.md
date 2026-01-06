@@ -49,6 +49,11 @@ One file. Claude remembers everything.
 ## Installation
 
 ```bash
+# One-time setup (if you haven't used GitHub plugins before)
+git config --global url."https://github.com/".insteadOf "git@github.com:"
+```
+
+```bash
 # In Claude Code
 /plugin add marketplace memvid/claude-brain
 ```
@@ -64,10 +69,12 @@ Done.
 After install, Claude's memory lives in one file:
 
 ```
-your-project/.claude/mind.mv2
+your-project/
+└── .claude/
+    └── mind.mv2   # Claude's brain. That's it.
 ```
 
-That's it. No database. No cloud. No API keys.
+No database. No cloud. No API keys.
 
 **What gets captured:**
 - Session context, decisions, bugs, solutions
@@ -85,11 +92,13 @@ That's it. No database. No cloud. No API keys.
 
 **In Claude Code:**
 ```bash
-/mind:mind search "auth bug"      # find past context
-/mind:mind ask "why JWT?"         # query memory
-/mind:mind recent                 # latest memories
-/mind:mind stats                  # usage stats
+/mind stats                       # memory statistics
+/mind search "authentication"     # find past context
+/mind ask "why did we choose X?"  # ask your memory
+/mind recent                      # what happened lately
 ```
+
+Or just ask naturally: *"mind stats"*, *"search my memory for auth bugs"*, etc.
 
 <br />
 
