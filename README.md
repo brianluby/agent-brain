@@ -14,6 +14,10 @@
 
 <br />
 
+## Memvid Shoutout
+
+Memvid's creative approach to data storage—encoding text in video frames and using decades of video codec R&D for superior compression—inspired me to fork their Claude Brain project into an agent-agnostic version. None of this would be possible without their dedication to open source. If you're working on AI memory, check them out at [github.com/memvid](https://github.com/memvid) —it's seriously clever engineering.
+
 ## The Problem
 
 ```
