@@ -182,22 +182,20 @@ get_feature_paths() {
     ard_path="$(resolve_formal_doc_path "$repo_root" "$feature_dir" "ar.md" "AR")"
     sec_path="$(resolve_formal_doc_path "$repo_root" "$feature_dir" "sec.md" "SEC")"
 
-    cat <<EOF
-REPO_ROOT='$repo_root'
-CURRENT_BRANCH='$current_branch'
-HAS_GIT='$has_git_repo'
-FEATURE_DIR='$feature_dir'
-FEATURE_SPEC='$feature_dir/spec.md'
-IMPL_PLAN='$feature_dir/plan.md'
-TASKS='$feature_dir/tasks.md'
-RESEARCH='$feature_dir/research.md'
-DATA_MODEL='$feature_dir/data-model.md'
-QUICKSTART='$feature_dir/quickstart.md'
-CONTRACTS_DIR='$feature_dir/contracts'
-PRD='$prd_path'
-ARD='$ard_path'
-SEC='$sec_path'
-EOF
+    printf "REPO_ROOT=%q\n" "$repo_root"
+    printf "CURRENT_BRANCH=%q\n" "$current_branch"
+    printf "HAS_GIT=%q\n" "$has_git_repo"
+    printf "FEATURE_DIR=%q\n" "$feature_dir"
+    printf "FEATURE_SPEC=%q\n" "$feature_dir/spec.md"
+    printf "IMPL_PLAN=%q\n" "$feature_dir/plan.md"
+    printf "TASKS=%q\n" "$feature_dir/tasks.md"
+    printf "RESEARCH=%q\n" "$feature_dir/research.md"
+    printf "DATA_MODEL=%q\n" "$feature_dir/data-model.md"
+    printf "QUICKSTART=%q\n" "$feature_dir/quickstart.md"
+    printf "CONTRACTS_DIR=%q\n" "$feature_dir/contracts"
+    printf "PRD=%q\n" "$prd_path"
+    printf "ARD=%q\n" "$ard_path"
+    printf "SEC=%q\n" "$sec_path"
 }
 
 check_file() { [[ -f "$1" ]] && echo "  ✓ $2" || echo "  ✗ $2"; }

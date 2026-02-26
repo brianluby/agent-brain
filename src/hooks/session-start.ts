@@ -9,7 +9,7 @@
 import { readStdin, writeOutput, debug } from "../utils/helpers.js";
 import type { HookInput } from "../types.js";
 import { existsSync, statSync } from "node:fs";
-import { basename } from "node:path";
+import { basename, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   detectPlatform,
@@ -98,7 +98,7 @@ export function buildSessionStartOutput(hookInput: HookInput): Record<string, un
     hookEventName: "SessionStart",
     additionalContext: buildContextLines(
       projectName,
-      pathPolicy.memoryPath.replace(`${projectDir}/`, ""),
+      relative(projectDir, pathPolicy.memoryPath) || basename(pathPolicy.memoryPath),
       memoryExists,
       fileSizeKB,
       platform,

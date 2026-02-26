@@ -18,6 +18,7 @@ describe("session start startup regression", () => {
     }
 
     const elapsed = performance.now() - start;
-    expect(elapsed).toBeLessThan(1000);
+    const thresholdMs = process.env.CI ? 3000 : 1000;
+    expect(elapsed).toBeLessThan(thresholdMs);
   });
 });

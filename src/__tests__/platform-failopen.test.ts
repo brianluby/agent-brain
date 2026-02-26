@@ -35,6 +35,14 @@ describe("platform fail-open behavior", () => {
     expect(result.reason).toBe("incompatible_contract_major");
   });
 
+  it("skips invalid contract version strings", () => {
+    const result = processPlatformEvent(
+      makeEvent({ contractVersion: "not-semver" })
+    );
+    expect(result.skipped).toBe(true);
+    expect(result.reason).toBe("invalid_contract_version");
+  });
+
   it("skips when project identity cannot be resolved", () => {
     const result = processPlatformEvent(
       makeEvent({ projectContext: {} })

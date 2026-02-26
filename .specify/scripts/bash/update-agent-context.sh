@@ -457,7 +457,7 @@ update_existing_agent_file() {
             # Keep only first 2 existing changes
             if [[ $existing_changes_count -lt 2 ]]; then
                 echo "$line" >> "$temp_file"
-                ((existing_changes_count++))
+                ((++existing_changes_count))
             fi
             continue
         fi
@@ -710,15 +710,7 @@ update_all_existing_agents() {
         found_agent=true
     fi
 
-    if [[ -f "$Q_FILE" ]]; then
-        update_agent_file "$Q_FILE" "Amazon Q Developer CLI"
-        found_agent=true
-    fi
-    
-    if [[ -f "$BOB_FILE" ]]; then
-        update_agent_file "$BOB_FILE" "IBM Bob"
-        found_agent=true
-    fi
+    # Q_FILE and BOB_FILE resolve to the same path as AGENTS_FILE — already handled above
     
     # If no agent files exist, create a default Claude file
     if [[ "$found_agent" == false ]]; then

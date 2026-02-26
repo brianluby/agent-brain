@@ -84,11 +84,10 @@ done
 SCRIPT_DIR="$(CDPATH="" cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
 
-# Get feature paths and validate branch
+# Get feature paths
 eval $(get_feature_paths)
-check_feature_branch "$CURRENT_BRANCH" "$HAS_GIT" || exit 1
 
-# If paths-only mode, output paths and exit (support JSON + paths-only combined)
+# If paths-only mode, output paths and exit (skip validation)
 if $PATHS_ONLY; then
     if $JSON_MODE; then
         # Minimal JSON paths payload (no validation performed) - use jq for proper JSON escaping
@@ -113,6 +112,9 @@ if $PATHS_ONLY; then
     fi
     exit 0
 fi
+
+# Validate branch (after paths-only short-circuit)
+check_feature_branch "$CURRENT_BRANCH" "$HAS_GIT" || exit 1
 
 # Validate required directories and files
 if [[ ! -d "$FEATURE_DIR" ]]; then

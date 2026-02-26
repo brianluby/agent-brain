@@ -1,7 +1,7 @@
 /**
  * Memvid Mind - Type Definitions
  *
- * Core types for Claude Code memory persistence.
+ * Core types for multi-platform agent memory persistence.
  */
 
 /** Observation captured from tool use */
@@ -84,7 +84,7 @@ export const DEFAULT_CONFIG: MindConfig = {
   debug: false,
 };
 
-/** Hook input from Claude Code */
+/** Hook input from the host coding assistant (Claude Code, OpenCode, etc.) */
 export interface HookInput {
   session_id: string;
   platform?: string;

@@ -14,13 +14,17 @@ export type { ReadonlyAdapterRegistry } from "./registry.js";
 export { AdapterRegistry } from "./registry.js";
 export * from "./adapters/index.js";
 
-let defaultRegistry: AdapterRegistry | null = null;
+let defaultRegistry: ReadonlyAdapterRegistry | null = null;
 
 export function getDefaultAdapterRegistry(): ReadonlyAdapterRegistry {
   if (!defaultRegistry) {
-    defaultRegistry = new AdapterRegistry();
-    defaultRegistry.register(claudeAdapter);
-    defaultRegistry.register(opencodeAdapter);
+    const registry = new AdapterRegistry();
+    registry.register(claudeAdapter);
+    registry.register(opencodeAdapter);
+    defaultRegistry = Object.freeze({
+      resolve: (platform: string) => registry.resolve(platform),
+      listPlatforms: () => registry.listPlatforms(),
+    });
   }
 
   return defaultRegistry;

@@ -42,7 +42,7 @@ export function processPlatformEvent(
     SUPPORTED_ADAPTER_CONTRACT_MAJOR
   );
   if (!contractValidation.compatible) {
-    return skipWithDiagnostic(event.platform, "incompatible_contract_major", ["contractVersion"]);
+    return skipWithDiagnostic(event.platform, contractValidation.reason ?? "incompatible_contract", ["contractVersion"]);
   }
 
   const identity = resolveProjectIdentityKey(event.projectContext);

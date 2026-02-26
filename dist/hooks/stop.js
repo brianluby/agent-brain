@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { constants, readdirSync, unlinkSync, existsSync } from 'fs';
-import { dirname, resolve } from 'path';
+import { dirname, resolve, isAbsolute, relative, sep } from 'path';
 import { access, readFile, mkdir, open } from 'fs/promises';
 import { randomBytes } from 'crypto';
 import lockfile from 'proper-lockfile';
@@ -59,19 +59,32 @@ async function withMemvidLock(lockPath, fn) {
   }
 }
 function defaultPlatformRelativePath(platform) {
-  return `.claude/mind-${platform}.mv2`;
+  const safePlatform = platform.replace(/[^a-z0-9_-]/gi, "-");
+  return `.claude/mind-${safePlatform}.mv2`;
+}
+function resolveInsideProject(projectDir, candidatePath) {
+  if (isAbsolute(candidatePath)) {
+    return resolve(candidatePath);
+  }
+  const root = resolve(projectDir);
+  const resolved = resolve(root, candidatePath);
+  const rel = relative(root, resolved);
+  if (rel === ".." || rel.startsWith(`..${sep}`)) {
+    throw new Error("Resolved memory path must stay inside projectDir");
+  }
+  return resolved;
 }
 function resolveMemoryPathPolicy(input) {
   if (input.platformOptIn) {
-    const relative = input.platformRelativePath || defaultPlatformRelativePath(input.platform);
+    const relativePath = input.platformRelativePath || defaultPlatformRelativePath(input.platform);
     return {
       mode: "platform_opt_in",
-      memoryPath: resolve(input.projectDir, relative)
+      memoryPath: resolveInsideProject(input.projectDir, relativePath)
     };
   }
   return {
     mode: "legacy_first",
-    memoryPath: resolve(input.projectDir, input.legacyRelativePath)
+    memoryPath: resolveInsideProject(input.projectDir, input.legacyRelativePath)
   };
 }
 
@@ -86,7 +99,7 @@ function detectPlatformFromEnv() {
   if (explicitFromEnv) {
     return explicitFromEnv;
   }
-  if (process.env.OPENCODE === "1" || process.env.OPENCODE_SESSION === "1") {
+  if (process.env.OPENCODE === "1") {
     return "opencode";
   }
   return "claude";
@@ -445,7 +458,7 @@ function createAdapter(platform) {
         eventId: createEventId(),
         eventType: "session_start",
         platform,
-        contractVersion: input.contract_version || CONTRACT_VERSION,
+        contractVersion: input.contract_version?.trim() || CONTRACT_VERSION,
         sessionId: input.session_id,
         timestamp: Date.now(),
         projectContext: projectContext(input),
@@ -462,7 +475,7 @@ function createAdapter(platform) {
         eventId: createEventId(),
         eventType: "tool_observation",
         platform,
-        contractVersion: input.contract_version || CONTRACT_VERSION,
+        contractVersion: input.contract_version?.trim() || CONTRACT_VERSION,
         sessionId: input.session_id,
         timestamp: Date.now(),
         projectContext: projectContext(input),
@@ -478,7 +491,7 @@ function createAdapter(platform) {
         eventId: createEventId(),
         eventType: "session_stop",
         platform,
-        contractVersion: input.contract_version || CONTRACT_VERSION,
+        contractVersion: input.contract_version?.trim() || CONTRACT_VERSION,
         sessionId: input.session_id,
         timestamp: Date.now(),
         projectContext: projectContext(input),
@@ -606,7 +619,7 @@ function processPlatformEvent(event) {
     SUPPORTED_ADAPTER_CONTRACT_MAJOR
   );
   if (!contractValidation.compatible) {
-    return skipWithDiagnostic(event.platform, "incompatible_contract_major", ["contractVersion"]);
+    return skipWithDiagnostic(event.platform, contractValidation.reason ?? "incompatible_contract", ["contractVersion"]);
   }
   const identity = resolveProjectIdentityKey(event.projectContext);
   if (!identity.key) {
@@ -626,9 +639,13 @@ function processPlatformEvent(event) {
 var defaultRegistry = null;
 function getDefaultAdapterRegistry() {
   if (!defaultRegistry) {
-    defaultRegistry = new AdapterRegistry();
-    defaultRegistry.register(claudeAdapter);
-    defaultRegistry.register(opencodeAdapter);
+    const registry = new AdapterRegistry();
+    registry.register(claudeAdapter);
+    registry.register(opencodeAdapter);
+    defaultRegistry = Object.freeze({
+      resolve: (platform) => registry.resolve(platform),
+      listPlatforms: () => registry.listPlatforms()
+    });
   }
   return defaultRegistry;
 }

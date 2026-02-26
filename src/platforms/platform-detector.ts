@@ -12,7 +12,7 @@ export function detectPlatformFromEnv(): string {
     return explicitFromEnv;
   }
 
-  if (process.env.OPENCODE === "1" || process.env.OPENCODE_SESSION === "1") {
+  if (process.env.OPENCODE === "1") {
     return "opencode";
   }
 
