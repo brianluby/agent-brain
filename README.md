@@ -50,21 +50,71 @@ One file. All your agents remember everything.
 
 ## Installation
 
-### Agent
+### Claude Code (Marketplace)
 
 ```bash
-# One-time setup (if you haven't used GitHub plugins before)
+# Optional one-time setup (if GitHub plugin URLs fail)
 git config --global url."https://github.com/".insteadOf "git@github.com:"
 ```
 
 ```bash
-# In Agent Code
+# In Claude Code
 /plugin add marketplace brianluby/Agent-brain
 ```
 
-Then: `/plugins` → Installed → **mind** Enable Plugin → Restart.
+Then in Claude Code:
 
-Done.
+1. Open `/plugins`
+2. Go to **Installed**
+3. Enable **mind**
+4. Restart Claude Code
+
+On first run, memory is created at:
+
+```bash
+.agent-brain/mind.mv2
+```
+
+If you already have a legacy file at `.claude/mind.mv2`, the plugin will prompt you to move it:
+
+```bash
+mkdir -p ".agent-brain" && mv ".claude/mind.mv2" ".agent-brain/mind.mv2"
+```
+
+### OpenCode
+
+Add this plugin package to your OpenCode config:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["@brianluby/agent-brain"]
+}
+```
+
+Or use a local checkout while developing:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["file:///absolute/path/to/agent-brain"]
+}
+```
+
+Then restart OpenCode. The plugin will:
+
+- inject memory context on the first message of each session
+- capture tool outputs to persistent memory
+- expose a `mind` tool (`search`, `ask`, `recent`, `stats`, `remember`)
+
+Optional: install OpenCode slash commands globally for all projects:
+
+```bash
+mkdir -p ~/.config/opencode/commands
+cp .opencode/commands/mind-*.md ~/.config/opencode/commands/
+```
+
+Project-local command files are already included in `.opencode/commands/`.
 
 <br />
 
@@ -94,13 +144,25 @@ No database. No cloud. No API keys.
 
 ## Commands
 
-**In Agent Code:**
+**In Claude Code:**
 ```bash
 /mind stats                       # memory statistics
 /mind search "authentication"     # find past context
 /mind ask "why did we choose X?"  # ask your memory
 /mind recent                      # what happened lately
 ```
+
+**In OpenCode (slash commands):**
+```bash
+/mind-stats
+/mind-search authentication
+/mind-ask "why did we choose X?"
+/mind-recent
+/mind-remember "Project uses pnpm, not npm"
+```
+
+These are provided in `.opencode/commands/` for project-local usage.
+To use them in every repo, copy them to `~/.config/opencode/commands/`.
 
 Or just ask naturally: *"mind stats"*, *"search my memory for auth bugs"*, etc.
 
@@ -111,6 +173,7 @@ Memvid Mind now supports the same core memory lifecycle through a platform adapt
 - Claude and OpenCode sessions can share project memory continuity.
 - Unknown or incompatible platforms fail open (session continues, memory capture safely skips).
 - Adapter contracts are SemVer-checked and validated through regression and contract tests.
+- OpenCode packaging is published through the npm package `@brianluby/agent-brain`.
 
 <br />
 
@@ -123,10 +186,10 @@ npm install -g memvid-cli
 ```
 
 ```bash
-memvid stats .Agent/mind.mv2           # view memory stats
-memvid find .Agent/mind.mv2 "auth"     # search memories
-memvid ask .Agent/mind.mv2 "why JWT?"  # ask questions
-memvid timeline .Agent/mind.mv2        # view timeline
+memvid stats .agent-brain/mind.mv2           # view memory stats
+memvid find .agent-brain/mind.mv2 "auth"     # search memories
+memvid ask .agent-brain/mind.mv2 "why JWT?"  # ask questions
+memvid timeline .agent-brain/mind.mv2        # view timeline
 ```
 
 [Full CLI reference →](https://docs.memvid.com/cli/cheat-sheet)
@@ -159,7 +222,7 @@ Sub-millisecond. Native Rust core. Searches 10K+ memories in <1ms.
 <details>
 <summary><b>Reset memory?</b></summary>
 
-`rm .Agent/mind.mv2`
+`rm .agent-brain/mind.mv2`
 
 </details>
 

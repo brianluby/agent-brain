@@ -4,6 +4,6 @@ describe("memvid-mind", () => {
   it("should export types", async () => {
     const exports = await import("../index.js");
     expect(exports.DEFAULT_CONFIG).toBeDefined();
-    expect(exports.DEFAULT_CONFIG.memoryPath).toBe(".claude/mind.mv2");
+    expect(exports.DEFAULT_CONFIG.memoryPath).toBe(".agent-brain/mind.mv2");
   });
 });

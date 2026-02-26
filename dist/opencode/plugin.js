@@ -1,11 +1,12 @@
-import { existsSync, readdirSync, unlinkSync, readFileSync, mkdirSync, writeFileSync, renameSync, rmSync } from 'fs';
-import { dirname, isAbsolute, resolve, relative, sep } from 'path';
+import { existsSync, statSync, readdirSync, unlinkSync, readFileSync, mkdirSync, writeFileSync, renameSync, rmSync } from 'fs';
+import { relative, basename, dirname, isAbsolute, resolve, sep } from 'path';
+import { tool } from '@opencode-ai/plugin';
 import { mkdir, open } from 'fs/promises';
 import { randomBytes } from 'crypto';
 import lockfile from 'proper-lockfile';
 import { tmpdir } from 'os';
 
-// src/core/mind.ts
+// src/opencode/plugin.ts
 
 // src/types.ts
 var DEFAULT_CONFIG = {
@@ -21,91 +22,6 @@ function generateId() {
 }
 function estimateTokens(text) {
   return Math.ceil(text.length / 4);
-}
-function truncateToTokens(text, maxTokens) {
-  const maxChars = maxTokens * 4;
-  if (text.length <= maxChars) return text;
-  return text.slice(0, maxChars - 3) + "...";
-}
-function formatTimestamp(ts) {
-  const date = new Date(ts);
-  const now = /* @__PURE__ */ new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffMins = Math.floor(diffMs / 6e4);
-  const diffHours = Math.floor(diffMs / 36e5);
-  const diffDays = Math.floor(diffMs / 864e5);
-  if (diffMins < 1) return "just now";
-  if (diffMins < 60) return `${diffMins}m ago`;
-  if (diffHours < 24) return `${diffHours}h ago`;
-  if (diffDays < 7) return `${diffDays}d ago`;
-  return date.toLocaleDateString();
-}
-function safeJsonParse(text, fallback) {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return fallback;
-  }
-}
-async function readStdin() {
-  const chunks = [];
-  return new Promise((resolve5, reject) => {
-    process.stdin.on("data", (chunk) => chunks.push(chunk));
-    process.stdin.on("end", () => resolve5(Buffer.concat(chunks).toString("utf8")));
-    process.stdin.on("error", reject);
-  });
-}
-function writeOutput(output) {
-  console.log(JSON.stringify(output));
-  process.exit(0);
-}
-function debug(message) {
-  if (process.env.MEMVID_MIND_DEBUG === "1") {
-    console.error(`[memvid-mind] ${message}`);
-  }
-}
-function extractKeyInfo(toolName, output) {
-  const maxLength = 2e3;
-  const truncated = output.length > maxLength ? output.slice(0, maxLength) + "\n... (truncated)" : output;
-  switch (toolName) {
-    case "Read":
-      return extractFileReadSummary(truncated);
-    case "Bash":
-      return extractBashSummary(truncated);
-    case "Edit":
-      return extractEditSummary(truncated);
-    case "Grep":
-    case "Glob":
-      return extractSearchSummary(truncated);
-    default:
-      return truncated;
-  }
-}
-function extractFileReadSummary(output) {
-  const lines = output.split("\n");
-  if (lines.length <= 20) return output;
-  return `${lines.slice(0, 10).join("\n")}
-... (${lines.length} lines total)`;
-}
-function extractBashSummary(output) {
-  const lines = output.split("\n");
-  if (lines.length <= 30) return output;
-  return [
-    ...lines.slice(0, 10),
-    `... (${lines.length - 20} lines omitted)`,
-    ...lines.slice(-10)
-  ].join("\n");
-}
-function extractEditSummary(output) {
-  return output;
-}
-function extractSearchSummary(output) {
-  const lines = output.split("\n").filter(Boolean);
-  if (lines.length <= 20) return output;
-  return [
-    ...lines.slice(0, 15),
-    `... and ${lines.length - 15} more results`
-  ].join("\n");
 }
 function classifyObservationType(toolName, output) {
   const lowerOutput = output.toLowerCase();
@@ -224,13 +140,6 @@ function detectPlatformFromEnv() {
   }
   return "claude";
 }
-function detectPlatform(input) {
-  const explicitFromHook = normalizePlatform(input.platform);
-  if (explicitFromHook) {
-    return explicitFromHook;
-  }
-  return detectPlatformFromEnv();
-}
 
 // src/core/mind.ts
 function pruneBackups(memoryPath, keepCount) {
@@ -337,8 +246,8 @@ var Mind = class _Mind {
         memvid = await create(memoryPath, "basic");
         return;
       }
-      const { statSync, renameSync: renameSync2, unlinkSync: unlinkSync2 } = await import('fs');
-      const fileSize = statSync(memoryPath).size;
+      const { statSync: statSync2, renameSync: renameSync2, unlinkSync: unlinkSync2 } = await import('fs');
+      const fileSize = statSync2(memoryPath).size;
       const fileSizeMB = fileSize / (1024 * 1024);
       if (fileSizeMB > MAX_FILE_SIZE_MB) {
         console.error(`[memvid-mind] Memory file too large (${fileSizeMB.toFixed(1)}MB), likely corrupted. Creating fresh memory...`);
@@ -456,7 +365,7 @@ var Mind = class _Mind {
         }
         return tag.toLowerCase() !== observationType;
       });
-      const tool = typeof prefixedToolTag === "string" ? prefixedToolTag.replace(/^tool:/, "") : typeof metadata.tool === "string" ? metadata.tool : legacyToolTag;
+      const tool2 = typeof prefixedToolTag === "string" ? prefixedToolTag.replace(/^tool:/, "") : typeof metadata.tool === "string" ? metadata.tool : legacyToolTag;
       const timestamp = this.normalizeTimestampMs(
         metadata.timestamp || frame.timestamp || (typeof frame.created_at === "string" ? Date.parse(frame.created_at) : 0)
       );
@@ -465,7 +374,7 @@ var Mind = class _Mind {
           id: String(metadata.observationId || frame.frame_id || generateId()),
           timestamp,
           type: observationType,
-          tool,
+          tool: tool2,
           summary: frame.title?.replace(/^\[.*?\]\s*/, "") || frame.snippet || "",
           content: frame.text || frame.snippet || "",
           metadata: {
@@ -879,8 +788,274 @@ async function getMind(config) {
   }
   return mindInstance;
 }
-function resetMind() {
-  mindInstance = null;
+
+// src/utils/compression.ts
+var TARGET_COMPRESSED_SIZE = 2e3;
+var COMPRESSION_THRESHOLD = 3e3;
+function compressToolOutput(toolName, toolInput, output) {
+  const originalSize = output.length;
+  if (originalSize <= COMPRESSION_THRESHOLD) {
+    return { compressed: output, wasCompressed: false, originalSize };
+  }
+  let compressed;
+  switch (toolName) {
+    case "Read":
+      compressed = compressFileRead(toolInput, output);
+      break;
+    case "Bash":
+      compressed = compressBashOutput(toolInput, output);
+      break;
+    case "Grep":
+      compressed = compressGrepOutput(toolInput, output);
+      break;
+    case "Glob":
+      compressed = compressGlobOutput(toolInput, output);
+      break;
+    case "Edit":
+    case "Write":
+      compressed = compressEditOutput(toolInput, output);
+      break;
+    default:
+      compressed = compressGeneric(output);
+  }
+  return {
+    compressed: truncateToTarget(compressed),
+    wasCompressed: true,
+    originalSize
+  };
+}
+function compressFileRead(toolInput, output) {
+  const filePath = toolInput?.file_path || "unknown";
+  const fileName = filePath.split("/").pop() || "file";
+  const lines = output.split("\n");
+  const totalLines = lines.length;
+  const imports = extractImports(output);
+  const exports$1 = extractExports(output);
+  const functions = extractFunctionSignatures(output);
+  const classes = extractClassNames(output);
+  const errors = extractErrorPatterns(output);
+  const parts = [
+    `\u{1F4C4} File: ${fileName} (${totalLines} lines)`
+  ];
+  if (imports.length > 0) {
+    parts.push(`
+\u{1F4E6} Imports: ${imports.slice(0, 10).join(", ")}${imports.length > 10 ? ` (+${imports.length - 10} more)` : ""}`);
+  }
+  if (exports$1.length > 0) {
+    parts.push(`
+\u{1F4E4} Exports: ${exports$1.slice(0, 10).join(", ")}${exports$1.length > 10 ? ` (+${exports$1.length - 10} more)` : ""}`);
+  }
+  if (functions.length > 0) {
+    parts.push(`
+\u26A1 Functions: ${functions.slice(0, 10).join(", ")}${functions.length > 10 ? ` (+${functions.length - 10} more)` : ""}`);
+  }
+  if (classes.length > 0) {
+    parts.push(`
+\u{1F3D7}\uFE0F Classes: ${classes.join(", ")}`);
+  }
+  if (errors.length > 0) {
+    parts.push(`
+\u26A0\uFE0F Errors/TODOs: ${errors.slice(0, 5).join("; ")}`);
+  }
+  const contextLines = [
+    "\n--- First 10 lines ---",
+    ...lines.slice(0, 10),
+    "\n--- Last 5 lines ---",
+    ...lines.slice(-5)
+  ];
+  parts.push(contextLines.join("\n"));
+  return parts.join("");
+}
+function compressBashOutput(toolInput, output) {
+  const command = toolInput?.command || "command";
+  const shortCmd = command.split("\n")[0].slice(0, 100);
+  const lines = output.split("\n");
+  const errorLines = lines.filter(
+    (l) => l.toLowerCase().includes("error") || l.toLowerCase().includes("failed") || l.toLowerCase().includes("exception") || l.toLowerCase().includes("warning")
+  );
+  const successLines = lines.filter(
+    (l) => l.toLowerCase().includes("success") || l.toLowerCase().includes("passed") || l.toLowerCase().includes("completed") || l.toLowerCase().includes("done")
+  );
+  const parts = [`\u{1F5A5}\uFE0F Command: ${shortCmd}`];
+  if (errorLines.length > 0) {
+    parts.push(`
+\u274C Errors (${errorLines.length}):`);
+    parts.push(errorLines.slice(0, 10).join("\n"));
+  }
+  if (successLines.length > 0) {
+    parts.push(`
+\u2705 Success indicators:`);
+    parts.push(successLines.slice(0, 5).join("\n"));
+  }
+  parts.push(`
+\u{1F4CA} Output: ${lines.length} lines total`);
+  if (lines.length > 20) {
+    parts.push("\n--- First 10 lines ---");
+    parts.push(lines.slice(0, 10).join("\n"));
+    parts.push("\n--- Last 5 lines ---");
+    parts.push(lines.slice(-5).join("\n"));
+  } else {
+    parts.push("\n--- Full output ---");
+    parts.push(lines.join("\n"));
+  }
+  return parts.join("");
+}
+function compressGrepOutput(toolInput, output) {
+  const pattern = toolInput?.pattern || "pattern";
+  const lines = output.split("\n").filter(Boolean);
+  const files = /* @__PURE__ */ new Set();
+  lines.forEach((line) => {
+    const match = line.match(/^([^:]+):/);
+    if (match) files.add(match[1]);
+  });
+  const parts = [
+    `\u{1F50D} Grep: "${pattern.slice(0, 50)}"`,
+    `\u{1F4C1} Found in ${files.size} files, ${lines.length} matches`
+  ];
+  if (files.size > 0) {
+    parts.push(`
+\u{1F4C2} Files: ${Array.from(files).slice(0, 15).join(", ")}${files.size > 15 ? ` (+${files.size - 15} more)` : ""}`);
+  }
+  parts.push("\n--- Top matches ---");
+  parts.push(lines.slice(0, 10).join("\n"));
+  if (lines.length > 10) {
+    parts.push(`
+... and ${lines.length - 10} more matches`);
+  }
+  return parts.join("");
+}
+function compressGlobOutput(toolInput, output) {
+  const pattern = toolInput?.pattern || "pattern";
+  let files = [];
+  try {
+    const parsed = JSON.parse(output);
+    files = parsed.filenames || [];
+  } catch {
+    files = output.split("\n").filter(Boolean);
+  }
+  const byDir = {};
+  files.forEach((f) => {
+    const dir = f.split("/").slice(0, -1).join("/") || "/";
+    const file = f.split("/").pop() || f;
+    if (!byDir[dir]) byDir[dir] = [];
+    byDir[dir].push(file);
+  });
+  const parts = [
+    `\u{1F4C2} Glob: "${pattern.slice(0, 50)}"`,
+    `\u{1F4C1} Found ${files.length} files in ${Object.keys(byDir).length} directories`
+  ];
+  const topDirs = Object.entries(byDir).sort((a, b) => b[1].length - a[1].length).slice(0, 5);
+  parts.push("\n--- Top directories ---");
+  topDirs.forEach(([dir, dirFiles]) => {
+    const shortDir = dir.split("/").slice(-3).join("/");
+    parts.push(`${shortDir}/ (${dirFiles.length} files)`);
+  });
+  parts.push("\n--- Sample files ---");
+  parts.push(files.slice(0, 15).map((f) => f.split("/").pop()).join(", "));
+  return parts.join("");
+}
+function compressEditOutput(toolInput, output) {
+  const filePath = toolInput?.file_path || "unknown";
+  const fileName = filePath.split("/").pop() || "file";
+  return [
+    `\u270F\uFE0F Edited: ${fileName}`,
+    `\u{1F4DD} Changes applied successfully`,
+    output.slice(0, 500)
+  ].join("\n");
+}
+function compressGeneric(output) {
+  const lines = output.split("\n");
+  if (lines.length <= 30) {
+    return output;
+  }
+  return [
+    `\u{1F4CA} Output: ${lines.length} lines`,
+    "--- First 15 lines ---",
+    ...lines.slice(0, 15),
+    "--- Last 10 lines ---",
+    ...lines.slice(-10)
+  ].join("\n");
+}
+function extractImports(code) {
+  const imports = [];
+  const patterns = [
+    /import\s+(?:{\s*([^}]+)\s*}|(\w+))\s+from\s+['"]([^'"]+)['"]/g,
+    /from\s+['"]([^'"]+)['"]\s+import/g,
+    /require\s*\(['"]([^'"]+)['"]\)/g,
+    /use\s+(\w+(?:::\w+)*)/g
+  ];
+  patterns.forEach((pattern) => {
+    let match;
+    while ((match = pattern.exec(code)) !== null) {
+      imports.push(match[3] || match[1] || match[2] || match[0]);
+    }
+  });
+  return [...new Set(imports)];
+}
+function extractExports(code) {
+  const exports$1 = [];
+  const patterns = [
+    /export\s+(?:default\s+)?(?:function|class|const|let|var)\s+(\w+)/g,
+    /export\s*{\s*([^}]+)\s*}/g,
+    /pub\s+(?:fn|struct|enum|trait|mod)\s+(\w+)/g
+  ];
+  patterns.forEach((pattern) => {
+    let match;
+    while ((match = pattern.exec(code)) !== null) {
+      const names = (match[1] || "").split(",").map((s) => s.trim());
+      exports$1.push(...names.filter(Boolean));
+    }
+  });
+  return [...new Set(exports$1)];
+}
+function extractFunctionSignatures(code) {
+  const functions = [];
+  const patterns = [
+    /(?:async\s+)?function\s+(\w+)/g,
+    /(\w+)\s*:\s*(?:async\s+)?\([^)]*\)\s*=>/g,
+    /(?:const|let)\s+(\w+)\s*=\s*(?:async\s+)?\([^)]*\)\s*=>/g,
+    /fn\s+(\w+)/g,
+    /def\s+(\w+)/g
+  ];
+  patterns.forEach((pattern) => {
+    let match;
+    while ((match = pattern.exec(code)) !== null) {
+      functions.push(match[1]);
+    }
+  });
+  return [...new Set(functions)];
+}
+function extractClassNames(code) {
+  const classes = [];
+  const patterns = [
+    /class\s+(\w+)/g,
+    /struct\s+(\w+)/g,
+    /interface\s+(\w+)/g,
+    /type\s+(\w+)\s*=/g
+  ];
+  patterns.forEach((pattern) => {
+    let match;
+    while ((match = pattern.exec(code)) !== null) {
+      classes.push(match[1]);
+    }
+  });
+  return [...new Set(classes)];
+}
+function extractErrorPatterns(code) {
+  const errors = [];
+  const lines = code.split("\n");
+  lines.forEach((line) => {
+    if (line.includes("TODO") || line.includes("FIXME") || line.includes("HACK") || line.includes("XXX") || line.includes("BUG")) {
+      errors.push(line.trim().slice(0, 100));
+    }
+  });
+  return errors.slice(0, 10);
+}
+function truncateToTarget(text) {
+  if (text.length <= TARGET_COMPRESSED_SIZE) {
+    return text;
+  }
+  return text.slice(0, TARGET_COMPRESSED_SIZE - 20) + "\n... (compressed)";
 }
 
 // src/platforms/registry.ts
@@ -970,9 +1145,6 @@ var claudeAdapter = createAdapter("claude");
 
 // src/platforms/adapters/opencode.ts
 var opencodeAdapter = createAdapter("opencode");
-
-// src/platforms/adapters/example-adapter.ts
-var exampleAdapter = createAdapter("example");
 
 // src/platforms/contract.ts
 var SUPPORTED_ADAPTER_CONTRACT_MAJOR = 1;
@@ -1225,10 +1397,394 @@ function getDefaultAdapterRegistry() {
   }
   return defaultRegistry;
 }
-function resetDefaultAdapterRegistry() {
-  defaultRegistry = null;
-}
 
-export { DEFAULT_CONFIG, Mind, SUPPORTED_ADAPTER_CONTRACT_MAJOR, classifyObservationType, claudeAdapter, createAdapter, createRedactedDiagnostic, debug, detectPlatform, detectPlatformFromEnv, estimateTokens, exampleAdapter, extractKeyInfo, formatTimestamp, generateId, getDefaultAdapterRegistry, getMind, opencodeAdapter, processPlatformEvent, readStdin, resetDefaultAdapterRegistry, resetMind, resolveMemoryPathPolicy, resolveProjectIdentityKey, safeJsonParse, truncateToTokens, validateAdapterContractVersion, writeOutput };
-//# sourceMappingURL=index.js.map
-//# sourceMappingURL=index.js.map
+// src/opencode/plugin.ts
+var OBSERVED_TOOLS = /* @__PURE__ */ new Set([
+  "Read",
+  "Edit",
+  "Write",
+  "Update",
+  "Bash",
+  "Grep",
+  "Glob",
+  "WebFetch",
+  "Task"
+]);
+var ALWAYS_CAPTURE_TOOLS = /* @__PURE__ */ new Set(["Edit", "Write", "Update"]);
+var MIN_OUTPUT_LENGTH = 50;
+var MAX_OUTPUT_LENGTH = 2500;
+var TOOL_NAME_MAP = {
+  read: "Read",
+  edit: "Edit",
+  write: "Write",
+  update: "Update",
+  apply_patch: "Update",
+  bash: "Bash",
+  grep: "Grep",
+  glob: "Glob",
+  webfetch: "WebFetch",
+  task: "Task"
+};
+var seenSessionIntro = /* @__PURE__ */ new Set();
+var processedToolCalls = /* @__PURE__ */ new Set();
+function toCanonicalToolName(toolID) {
+  return TOOL_NAME_MAP[toolID.toLowerCase()] || null;
+}
+function toToolInput(args) {
+  if (!args || typeof args !== "object" || Array.isArray(args)) {
+    return void 0;
+  }
+  return args;
+}
+function toToolOutput(output) {
+  if (typeof output === "string") {
+    return output;
+  }
+  if (output === void 0 || output === null) {
+    return "";
+  }
+  try {
+    return JSON.stringify(output, null, 2);
+  } catch {
+    return String(output);
+  }
+}
+function summarizeTool(toolName, toolInput, rawOutput) {
+  switch (toolName) {
+    case "Read": {
+      const path = toolInput?.filePath || "file";
+      const fileName = path.split("/").pop() || "file";
+      return `Read ${fileName}`;
+    }
+    case "Edit":
+    case "Update": {
+      const path = toolInput?.filePath || "file";
+      const fileName = path.split("/").pop() || "file";
+      return `Edited ${fileName}`;
+    }
+    case "Write": {
+      const path = toolInput?.filePath || "file";
+      const fileName = path.split("/").pop() || "file";
+      return `Created ${fileName}`;
+    }
+    case "Bash": {
+      const cmd = toolInput?.command || "command";
+      const hasError = /error|failed|exception/i.test(rawOutput);
+      return hasError ? `Command failed: ${cmd.slice(0, 60)}` : `Ran: ${cmd.slice(0, 60)}`;
+    }
+    case "Grep":
+      return `Searched pattern: ${String(toolInput?.pattern || "").slice(0, 40)}`;
+    case "Glob":
+      return `Matched files: ${String(toolInput?.pattern || "").slice(0, 40)}`;
+    case "WebFetch":
+      return `Fetched: ${String(toolInput?.url || "").slice(0, 60)}`;
+    default:
+      return `${toolName} completed`;
+  }
+}
+function extractMetadata(toolName, toolInput, projectIdentityKey) {
+  const metadata = {
+    platform: "opencode",
+    projectIdentityKey
+  };
+  if (!toolInput) {
+    return metadata;
+  }
+  const filePath = toolInput.filePath || toolInput.file_path;
+  if (typeof filePath === "string" && (toolName === "Read" || toolName === "Edit" || toolName === "Write" || toolName === "Update")) {
+    metadata.files = [filePath];
+  }
+  if (toolName === "Bash" && typeof toolInput.command === "string") {
+    metadata.command = toolInput.command.slice(0, 200);
+  }
+  if ((toolName === "Grep" || toolName === "Glob") && typeof toolInput.pattern === "string") {
+    metadata.pattern = toolInput.pattern;
+  }
+  return metadata;
+}
+function getUserPromptText(parts) {
+  return parts.filter((part) => {
+    return part.type === "text" && typeof part.text === "string";
+  }).map((part) => part.text).join("\n").trim();
+}
+function buildMigrationCommand(projectDir, fromPath, toPath) {
+  const fromDisplay = relative(projectDir, fromPath) || basename(fromPath);
+  const toDisplay = relative(projectDir, toPath) || basename(toPath);
+  return `mkdir -p "${dirname(toDisplay)}" && mv "${fromDisplay}" "${toDisplay}"`;
+}
+function buildInjectedContext(options) {
+  const lines = [];
+  lines.push("<agent-brain-context>");
+  lines.push("# Agent Brain Memory Context");
+  lines.push("");
+  lines.push(`Project: ${basename(options.projectDir)}`);
+  lines.push(`Platform: opencode`);
+  lines.push(`Memory: ${relative(options.projectDir, options.memoryPath) || basename(options.memoryPath)}${options.memoryExists ? ` (${options.fileSizeKB} KB)` : ""}`);
+  if (options.migrationCommand) {
+    lines.push("");
+    lines.push("Legacy memory file detected.");
+    lines.push(`Move it to the platform-agnostic path with: ${options.migrationCommand}`);
+  }
+  if (options.recent.length > 0) {
+    lines.push("");
+    lines.push("Recent memory highlights:");
+    for (const item of options.recent.slice(0, 6)) {
+      lines.push(`- [${item.type}] ${item.summary}`);
+    }
+  }
+  if (options.relevant.length > 0) {
+    lines.push("");
+    lines.push("Relevant memories for this prompt:");
+    for (const item of options.relevant.slice(0, 4)) {
+      lines.push(`- [${item.type}] ${item.summary}`);
+    }
+  }
+  lines.push("");
+  lines.push("Use these memories as background context while responding.");
+  lines.push("</agent-brain-context>");
+  return lines.join("\n");
+}
+var AgentBrainOpenCodePlugin = async ({ directory, project }) => {
+  return {
+    "chat.message": async (input, output) => {
+      if (seenSessionIntro.has(input.sessionID)) {
+        return;
+      }
+      seenSessionIntro.add(input.sessionID);
+      const pathPolicy = resolveMemoryPathPolicy({
+        projectDir: directory,
+        platform: "opencode",
+        defaultRelativePath: ".agent-brain/mind.mv2",
+        legacyRelativePaths: [".claude/mind.mv2"],
+        platformRelativePath: process.env.MEMVID_PLATFORM_MEMORY_PATH,
+        platformOptIn: process.env.MEMVID_PLATFORM_PATH_OPT_IN === "1"
+      });
+      const memoryExists = existsSync(pathPolicy.memoryPath);
+      let fileSizeKB = 0;
+      if (memoryExists) {
+        try {
+          fileSizeKB = Math.round(statSync(pathPolicy.memoryPath).size / 1024);
+        } catch {
+          fileSizeKB = 0;
+        }
+      }
+      const query = getUserPromptText(output.parts);
+      const mind = await getMind();
+      const context = await mind.getContext(query || void 0);
+      const migrationCommand = pathPolicy.migrationSuggestion ? buildMigrationCommand(
+        directory,
+        pathPolicy.migrationSuggestion.fromPath,
+        pathPolicy.migrationSuggestion.toPath
+      ) : void 0;
+      const injected = buildInjectedContext({
+        projectDir: directory,
+        memoryPath: pathPolicy.memoryPath,
+        memoryExists,
+        fileSizeKB,
+        recent: context.recentObservations.map((obs) => ({
+          type: obs.type,
+          summary: obs.summary
+        })),
+        relevant: context.relevantMemories.map((obs) => ({
+          type: obs.type,
+          summary: obs.summary
+        })),
+        migrationCommand
+      });
+      const part = {
+        id: `agent-brain-context-${Date.now()}`,
+        type: "text",
+        text: injected,
+        synthetic: true,
+        sessionID: input.sessionID,
+        messageID: output.message.id
+      };
+      output.parts.unshift(part);
+    },
+    "tool.execute.after": async (input, output) => {
+      const callKey = `${input.sessionID}:${input.callID}`;
+      if (processedToolCalls.has(callKey)) {
+        return;
+      }
+      const canonicalToolName = toCanonicalToolName(input.tool);
+      if (!canonicalToolName || !OBSERVED_TOOLS.has(canonicalToolName)) {
+        return;
+      }
+      const registry = getDefaultAdapterRegistry();
+      const adapter = registry.resolve("opencode");
+      if (!adapter) {
+        return;
+      }
+      const hookInput = {
+        session_id: input.sessionID,
+        platform: "opencode",
+        contract_version: "1.0.0",
+        project_id: project.id,
+        cwd: directory,
+        tool_name: canonicalToolName,
+        tool_input: toToolInput(input.args),
+        tool_response: output.output,
+        tool_use_id: input.callID
+      };
+      const normalized = adapter.normalizeToolObservation(hookInput);
+      if (!normalized) {
+        return;
+      }
+      const processed = processPlatformEvent(normalized);
+      if (processed.skipped || !processed.projectIdentityKey) {
+        return;
+      }
+      const rawOutput = toToolOutput(output.output);
+      const alwaysCapture = ALWAYS_CAPTURE_TOOLS.has(canonicalToolName);
+      if (!alwaysCapture && rawOutput.length < MIN_OUTPUT_LENGTH) {
+        return;
+      }
+      if (rawOutput.includes("<agent-brain-context>") || rawOutput.includes("<memvid-mind-context>")) {
+        return;
+      }
+      const toolInput = toToolInput(input.args);
+      const { compressed, wasCompressed, originalSize } = compressToolOutput(
+        canonicalToolName,
+        toolInput,
+        rawOutput
+      );
+      const content = compressed.length > MAX_OUTPUT_LENGTH ? `${compressed.slice(0, MAX_OUTPUT_LENGTH)}
+... (truncated${wasCompressed ? ", compressed" : ""})` : compressed;
+      const metadata = extractMetadata(
+        canonicalToolName,
+        toolInput,
+        processed.projectIdentityKey
+      );
+      if (wasCompressed) {
+        metadata.compressed = true;
+        metadata.originalSize = originalSize;
+        metadata.compressedSize = compressed.length;
+      }
+      const mind = await getMind();
+      await mind.remember({
+        type: classifyObservationType(canonicalToolName, content),
+        summary: summarizeTool(canonicalToolName, toolInput, rawOutput),
+        content,
+        tool: canonicalToolName,
+        metadata
+      });
+      processedToolCalls.add(callKey);
+    },
+    tool: {
+      mind: tool({
+        description: "Query and store Agent Brain memories",
+        args: {
+          mode: tool.schema.enum(["search", "ask", "recent", "stats", "remember"]).describe("Operation to perform"),
+          query: tool.schema.string().optional().describe("Search query or question"),
+          limit: tool.schema.number().optional().describe("Result limit"),
+          type: tool.schema.enum([
+            "discovery",
+            "decision",
+            "problem",
+            "solution",
+            "pattern",
+            "warning",
+            "success",
+            "refactor",
+            "bugfix",
+            "feature"
+          ]).optional().describe("Observation type for remember mode"),
+          summary: tool.schema.string().optional().describe("Short memory summary"),
+          content: tool.schema.string().optional().describe("Detailed memory content")
+        },
+        async execute(args) {
+          const mind = await getMind();
+          const limit = args.limit && args.limit > 0 ? Math.min(args.limit, 25) : 10;
+          if (args.mode === "search") {
+            if (!args.query) {
+              return JSON.stringify({ success: false, error: "query is required for search" });
+            }
+            const results = await mind.search(args.query, limit);
+            return JSON.stringify({
+              success: true,
+              mode: "search",
+              query: args.query,
+              count: results.length,
+              results: results.map((item) => ({
+                score: item.score,
+                summary: item.observation.summary,
+                type: item.observation.type,
+                tool: item.observation.tool
+              }))
+            });
+          }
+          if (args.mode === "ask") {
+            if (!args.query) {
+              return JSON.stringify({ success: false, error: "query is required for ask" });
+            }
+            const answer = await mind.ask(args.query);
+            return JSON.stringify({ success: true, mode: "ask", answer });
+          }
+          if (args.mode === "recent") {
+            const context = await mind.getContext();
+            return JSON.stringify({
+              success: true,
+              mode: "recent",
+              count: Math.min(context.recentObservations.length, limit),
+              observations: context.recentObservations.slice(0, limit).map((obs) => ({
+                type: obs.type,
+                summary: obs.summary,
+                tool: obs.tool,
+                timestamp: obs.timestamp
+              }))
+            });
+          }
+          if (args.mode === "stats") {
+            const stats = await mind.stats();
+            return JSON.stringify({ success: true, mode: "stats", stats });
+          }
+          if (args.mode === "remember") {
+            if (!args.summary || !args.content) {
+              return JSON.stringify({
+                success: false,
+                error: "summary and content are required for remember"
+              });
+            }
+            const observationType = args.type || "discovery";
+            const id = await mind.remember({
+              type: observationType,
+              summary: args.summary,
+              content: args.content,
+              tool: "mind",
+              metadata: {
+                platform: "opencode",
+                source: "manual"
+              }
+            });
+            return JSON.stringify({ success: true, mode: "remember", id });
+          }
+          return JSON.stringify({
+            success: false,
+            error: `Unsupported mode: ${String(args.mode)}`
+          });
+        }
+      })
+    },
+    event: async ({ event }) => {
+      if (event.type !== "session.deleted") {
+        return;
+      }
+      const eventData = event.properties;
+      const sessionID = eventData.info?.id;
+      if (!sessionID) {
+        return;
+      }
+      seenSessionIntro.delete(sessionID);
+      for (const key of processedToolCalls) {
+        if (key.startsWith(`${sessionID}:`)) {
+          processedToolCalls.delete(key);
+        }
+      }
+    }
+  };
+};
+var plugin_default = AgentBrainOpenCodePlugin;
+
+export { AgentBrainOpenCodePlugin, plugin_default as default };
+//# sourceMappingURL=plugin.js.map
+//# sourceMappingURL=plugin.js.map

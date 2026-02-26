@@ -9,7 +9,7 @@
 import { readStdin, writeOutput, debug } from "../utils/helpers.js";
 import type { HookInput } from "../types.js";
 import { existsSync, statSync } from "node:fs";
-import { basename, relative } from "node:path";
+import { basename, dirname, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   detectPlatform,
@@ -24,7 +24,8 @@ function buildContextLines(
   memoryExists: boolean,
   fileSizeKB: number,
   platform: string,
-  warning?: string
+  warning?: string,
+  migrationPrompt?: string
 ): string[] {
   const contextLines: string[] = [];
   contextLines.push("<memvid-mind-context>");
@@ -43,6 +44,12 @@ function buildContextLines(
   if (warning) {
     contextLines.push("");
     contextLines.push(`⚠️ ${warning}`);
+  }
+
+  if (migrationPrompt) {
+    contextLines.push("");
+    contextLines.push("❓ Legacy memory detected.");
+    contextLines.push(`Move it to the platform-agnostic path? Run: \`${migrationPrompt}\``);
   }
 
   contextLines.push("");
@@ -64,7 +71,8 @@ export function buildSessionStartOutput(hookInput: HookInput): Record<string, un
   const pathPolicy = resolveMemoryPathPolicy({
     projectDir,
     platform,
-    legacyRelativePath: ".claude/mind.mv2",
+    defaultRelativePath: ".agent-brain/mind.mv2",
+    legacyRelativePaths: [".claude/mind.mv2"],
     platformRelativePath: process.env.MEMVID_PLATFORM_MEMORY_PATH,
     platformOptIn: process.env.MEMVID_PLATFORM_PATH_OPT_IN === "1",
   });
@@ -83,6 +91,14 @@ export function buildSessionStartOutput(hookInput: HookInput): Record<string, un
   const adapter = registry.resolve(platform);
 
   let warning: string | undefined;
+  let migrationPrompt: string | undefined;
+
+  if (pathPolicy.migrationSuggestion) {
+    const fromDisplay = relative(projectDir, pathPolicy.migrationSuggestion.fromPath) || basename(pathPolicy.migrationSuggestion.fromPath);
+    const toDisplay = relative(projectDir, pathPolicy.migrationSuggestion.toPath) || basename(pathPolicy.migrationSuggestion.toPath);
+    migrationPrompt = `mkdir -p "${dirname(toDisplay)}" && mv "${fromDisplay}" "${toDisplay}"`;
+  }
+
   if (!adapter) {
     warning = "Unsupported platform detected: memory capture disabled for this session.";
   } else {
@@ -100,10 +116,11 @@ export function buildSessionStartOutput(hookInput: HookInput): Record<string, un
       projectName,
       relative(projectDir, pathPolicy.memoryPath) || basename(pathPolicy.memoryPath),
       memoryExists,
-      fileSizeKB,
-      platform,
-      warning
-    ).join("\n"),
+        fileSizeKB,
+        platform,
+        warning,
+        migrationPrompt
+      ).join("\n"),
   };
 
   return output;

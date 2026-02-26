@@ -77,11 +77,9 @@ function pruneExpired(records: AdapterDiagnostic[], now = Date.now()): AdapterDi
 
 class DiagnosticPersistence {
   readonly filePath: string;
-  private records: AdapterDiagnostic[];
 
   constructor(filePath: string) {
     this.filePath = filePath;
-    this.records = pruneExpired(this.loadFromDisk());
   }
 
   append(record: AdapterDiagnostic, now = Date.now()): void {
@@ -89,7 +87,6 @@ class DiagnosticPersistence {
       const latest = this.loadFromDisk();
       const next = pruneExpired([...latest, record], now);
       this.persist(next);
-      this.records = next;
     });
   }
 
@@ -100,7 +97,6 @@ class DiagnosticPersistence {
       if (pruned.length !== latest.length) {
         this.persist(pruned);
       }
-      this.records = pruned;
       return [...pruned];
     });
   }

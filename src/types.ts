@@ -60,7 +60,7 @@ export interface InjectedContext {
 
 /** Configuration for Memvid Mind */
 export interface MindConfig {
-  /** Path to the .memvid file (default: .mind.mv2 in project root) */
+  /** Path to the memory file (default: .agent-brain/mind.mv2 in project root) */
   memoryPath: string;
   /** Maximum observations to inject at session start */
   maxContextObservations: number;
@@ -76,7 +76,7 @@ export interface MindConfig {
 
 /** Default configuration */
 export const DEFAULT_CONFIG: MindConfig = {
-  memoryPath: ".claude/mind.mv2",
+  memoryPath: ".agent-brain/mind.mv2",
   maxContextObservations: 20,
   maxContextTokens: 2000,
   autoCompress: true,

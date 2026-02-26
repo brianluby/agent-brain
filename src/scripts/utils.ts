@@ -3,7 +3,9 @@
  */
 
 import { existsSync, mkdirSync, unlinkSync, renameSync } from "node:fs";
-import { dirname } from "node:path";
+import { basename, dirname, relative } from "node:path";
+import { resolveMemoryPathPolicy } from "../platforms/path-policy.js";
+import { detectPlatformFromEnv } from "../platforms/platform-detector.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type CreateFn = (path: string, kind: any) => Promise<any>;
@@ -93,4 +95,31 @@ export async function openMemorySafely(
     // Re-throw other errors
     throw openError;
   }
+}
+
+export interface ScriptMemoryPathResult {
+  memoryPath: string;
+  migrationPrompt?: string;
+}
+
+export function resolveScriptMemoryPath(projectDir: string): ScriptMemoryPathResult {
+  const pathPolicy = resolveMemoryPathPolicy({
+    projectDir,
+    platform: detectPlatformFromEnv(),
+    defaultRelativePath: ".agent-brain/mind.mv2",
+    legacyRelativePaths: [".claude/mind.mv2"],
+    platformRelativePath: process.env.MEMVID_PLATFORM_MEMORY_PATH,
+    platformOptIn: process.env.MEMVID_PLATFORM_PATH_OPT_IN === "1",
+  });
+
+  if (!pathPolicy.migrationSuggestion) {
+    return { memoryPath: pathPolicy.memoryPath };
+  }
+
+  const fromDisplay = relative(projectDir, pathPolicy.migrationSuggestion.fromPath) || basename(pathPolicy.migrationSuggestion.fromPath);
+  const toDisplay = relative(projectDir, pathPolicy.migrationSuggestion.toPath) || basename(pathPolicy.migrationSuggestion.toPath);
+  return {
+    memoryPath: pathPolicy.memoryPath,
+    migrationPrompt: `mkdir -p "${dirname(toDisplay)}" && mv "${fromDisplay}" "${toDisplay}"`,
+  };
 }

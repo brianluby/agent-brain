@@ -1,15 +1,16 @@
 #!/usr/bin/env node
-import { constants, readdirSync, unlinkSync, existsSync } from 'fs';
+import { constants, existsSync, readdirSync, unlinkSync, readFileSync, mkdirSync, writeFileSync, renameSync, rmSync } from 'fs';
 import { dirname, resolve, isAbsolute, relative, sep } from 'path';
 import { access, readFile, mkdir, open } from 'fs/promises';
 import { randomBytes } from 'crypto';
 import lockfile from 'proper-lockfile';
+import { tmpdir } from 'os';
 import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 
 // src/types.ts
 var DEFAULT_CONFIG = {
-  memoryPath: ".claude/mind.mv2",
+  memoryPath: ".agent-brain/mind.mv2",
   maxContextObservations: 20,
   maxContextTokens: 2e3,
   autoCompress: true,
@@ -24,9 +25,9 @@ function estimateTokens(text) {
 }
 async function readStdin() {
   const chunks = [];
-  return new Promise((resolve4, reject) => {
+  return new Promise((resolve5, reject) => {
     process.stdin.on("data", (chunk) => chunks.push(chunk));
-    process.stdin.on("end", () => resolve4(Buffer.concat(chunks).toString("utf8")));
+    process.stdin.on("end", () => resolve5(Buffer.concat(chunks).toString("utf8")));
     process.stdin.on("error", reject);
   });
 }
@@ -60,7 +61,7 @@ async function withMemvidLock(lockPath, fn) {
 }
 function defaultPlatformRelativePath(platform) {
   const safePlatform = platform.replace(/[^a-z0-9_-]/gi, "-");
-  return `.claude/mind-${safePlatform}.mv2`;
+  return `.agent-brain/mind-${safePlatform}.mv2`;
 }
 function resolveInsideProject(projectDir, candidatePath) {
   if (isAbsolute(candidatePath)) {
@@ -75,16 +76,41 @@ function resolveInsideProject(projectDir, candidatePath) {
   return resolved;
 }
 function resolveMemoryPathPolicy(input) {
+  const mode = input.platformOptIn ? "platform_opt_in" : "legacy_first";
+  const canonicalRelativePath = input.platformOptIn ? input.platformRelativePath || defaultPlatformRelativePath(input.platform) : input.defaultRelativePath;
+  const canonicalPath = resolveInsideProject(input.projectDir, canonicalRelativePath);
+  if (existsSync(canonicalPath)) {
+    return {
+      mode,
+      memoryPath: canonicalPath,
+      canonicalPath
+    };
+  }
+  const fallbackPaths = (input.legacyRelativePaths || []).map((relativePath) => resolveInsideProject(input.projectDir, relativePath));
+  for (const fallbackPath of fallbackPaths) {
+    if (existsSync(fallbackPath)) {
+      return {
+        mode,
+        memoryPath: fallbackPath,
+        canonicalPath,
+        migrationSuggestion: {
+          fromPath: fallbackPath,
+          toPath: canonicalPath
+        }
+      };
+    }
+  }
   if (input.platformOptIn) {
-    const relativePath = input.platformRelativePath || defaultPlatformRelativePath(input.platform);
     return {
       mode: "platform_opt_in",
-      memoryPath: resolveInsideProject(input.projectDir, relativePath)
+      memoryPath: canonicalPath,
+      canonicalPath
     };
   }
   return {
     mode: "legacy_first",
-    memoryPath: resolveInsideProject(input.projectDir, input.legacyRelativePath)
+    memoryPath: canonicalPath,
+    canonicalPath
   };
 }
 
@@ -144,17 +170,49 @@ async function loadSDK() {
   create = sdk.create;
   sdkLoaded = true;
 }
+var OBSERVATION_TYPE_KEYS = [
+  "discovery",
+  "decision",
+  "problem",
+  "solution",
+  "pattern",
+  "warning",
+  "success",
+  "refactor",
+  "bugfix",
+  "feature"
+];
+var OBSERVATION_TYPE_SET = new Set(OBSERVATION_TYPE_KEYS);
+function emptyTypeCounts() {
+  return {
+    discovery: 0,
+    decision: 0,
+    problem: 0,
+    solution: 0,
+    pattern: 0,
+    warning: 0,
+    success: 0,
+    refactor: 0,
+    bugfix: 0,
+    feature: 0
+  };
+}
 var Mind = class _Mind {
   memvid;
   config;
   memoryPath;
   sessionId;
+  sessionStartTime;
+  sessionObservationCount = 0;
+  cachedStats = null;
+  cachedStatsFrameCount = -1;
   initialized = false;
   constructor(memvid, config, memoryPath) {
     this.memvid = memvid;
     this.config = config;
     this.memoryPath = memoryPath;
     this.sessionId = generateId();
+    this.sessionStartTime = Date.now();
   }
   /**
    * Open or create a Mind instance
@@ -165,10 +223,12 @@ var Mind = class _Mind {
     const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
     const platform = detectPlatformFromEnv();
     const optIn = process.env.MEMVID_PLATFORM_PATH_OPT_IN === "1";
+    const legacyFallbacks = config.memoryPath === ".agent-brain/mind.mv2" ? [".claude/mind.mv2"] : [];
     const pathPolicy = resolveMemoryPathPolicy({
       projectDir,
       platform,
-      legacyRelativePath: config.memoryPath,
+      defaultRelativePath: config.memoryPath,
+      legacyRelativePaths: legacyFallbacks,
       platformRelativePath: process.env.MEMVID_PLATFORM_MEMORY_PATH,
       platformOptIn: optIn
     });
@@ -183,14 +243,14 @@ var Mind = class _Mind {
         memvid = await create(memoryPath, "basic");
         return;
       }
-      const { statSync, renameSync, unlinkSync: unlinkSync2 } = await import('fs');
+      const { statSync, renameSync: renameSync2, unlinkSync: unlinkSync2 } = await import('fs');
       const fileSize = statSync(memoryPath).size;
       const fileSizeMB = fileSize / (1024 * 1024);
       if (fileSizeMB > MAX_FILE_SIZE_MB) {
         console.error(`[memvid-mind] Memory file too large (${fileSizeMB.toFixed(1)}MB), likely corrupted. Creating fresh memory...`);
         const backupPath = `${memoryPath}.backup-${Date.now()}`;
         try {
-          renameSync(memoryPath, backupPath);
+          renameSync2(memoryPath, backupPath);
         } catch {
         }
         memvid = await create(memoryPath, "basic");
@@ -204,7 +264,7 @@ var Mind = class _Mind {
           console.error("[memvid-mind] Memory file corrupted, creating fresh memory...");
           const backupPath = `${memoryPath}.backup-${Date.now()}`;
           try {
-            renameSync(memoryPath, backupPath);
+            renameSync2(memoryPath, backupPath);
           } catch {
             try {
               unlinkSync2(memoryPath);
@@ -258,12 +318,19 @@ var Mind = class _Mind {
           sessionId: this.sessionId,
           ...observation.metadata
         },
-        tags: [observation.type, observation.tool].filter(Boolean)
+        tags: [
+          observation.type,
+          `session:${this.sessionId}`,
+          observation.tool ? `tool:${observation.tool}` : void 0
+        ].filter(Boolean)
       });
     });
     if (this.config.debug) {
       console.error(`[memvid-mind] Remembered: ${observation.summary}`);
     }
+    this.sessionObservationCount += 1;
+    this.cachedStats = null;
+    this.cachedStatsFrameCount = -1;
     return frameId;
   }
   /**
@@ -276,19 +343,225 @@ var Mind = class _Mind {
   }
   async searchUnlocked(query, limit) {
     const results = await this.memvid.find(query, { k: limit, mode: "lex" });
-    return (results.frames || []).map((frame) => ({
-      observation: {
-        id: frame.metadata?.observationId || frame.frame_id,
-        timestamp: frame.metadata?.timestamp || 0,
-        type: frame.label,
-        tool: frame.metadata?.tool,
-        summary: frame.title?.replace(/^\[.*?\]\s*/, "") || "",
-        content: frame.text || "",
-        metadata: frame.metadata
-      },
-      score: frame.score || 0,
-      snippet: frame.snippet || frame.text?.slice(0, 200) || ""
-    }));
+    const frames = this.toSearchFrames(results);
+    return frames.map((frame) => {
+      const rawTags = Array.isArray(frame.tags) ? frame.tags.filter((tag) => typeof tag === "string") : [];
+      const prefixedToolTag = rawTags.find((tag) => tag.startsWith("tool:"));
+      const labels = Array.isArray(frame.labels) ? frame.labels.filter((label) => typeof label === "string") : [];
+      const metadata = frame.metadata && typeof frame.metadata === "object" ? frame.metadata : {};
+      const observationType = this.extractObservationType({
+        label: frame.label,
+        labels
+      }) || "discovery";
+      const legacyToolTag = rawTags.find((tag) => {
+        if (tag.startsWith("tool:") || tag.startsWith("session:")) {
+          return false;
+        }
+        if (!/[A-Z]/.test(tag)) {
+          return false;
+        }
+        return tag.toLowerCase() !== observationType;
+      });
+      const tool = typeof prefixedToolTag === "string" ? prefixedToolTag.replace(/^tool:/, "") : typeof metadata.tool === "string" ? metadata.tool : legacyToolTag;
+      const timestamp = this.normalizeTimestampMs(
+        metadata.timestamp || frame.timestamp || (typeof frame.created_at === "string" ? Date.parse(frame.created_at) : 0)
+      );
+      return {
+        observation: {
+          id: String(metadata.observationId || frame.frame_id || generateId()),
+          timestamp,
+          type: observationType,
+          tool,
+          summary: frame.title?.replace(/^\[.*?\]\s*/, "") || frame.snippet || "",
+          content: frame.text || frame.snippet || "",
+          metadata: {
+            ...metadata,
+            labels,
+            tags: rawTags
+          }
+        },
+        score: frame.score || 0,
+        snippet: frame.snippet || frame.text?.slice(0, 200) || ""
+      };
+    });
+  }
+  toTimelineFrames(timelineResult) {
+    return Array.isArray(timelineResult) ? timelineResult : timelineResult.frames || [];
+  }
+  toSearchFrames(searchResult) {
+    if (Array.isArray(searchResult?.hits)) {
+      return searchResult.hits;
+    }
+    if (Array.isArray(searchResult?.frames)) {
+      return searchResult.frames;
+    }
+    return [];
+  }
+  normalizeTimestampMs(value) {
+    if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+      return 0;
+    }
+    if (value < 4102444800) {
+      return Math.round(value * 1e3);
+    }
+    return Math.round(value);
+  }
+  parseSessionSummary(value) {
+    if (!value || typeof value !== "object") {
+      return null;
+    }
+    const candidate = value;
+    if (typeof candidate.id !== "string" || typeof candidate.startTime !== "number" || typeof candidate.endTime !== "number" || typeof candidate.observationCount !== "number" || typeof candidate.summary !== "string" || !Array.isArray(candidate.keyDecisions) || !Array.isArray(candidate.filesModified)) {
+      return null;
+    }
+    return {
+      id: candidate.id,
+      startTime: this.normalizeTimestampMs(candidate.startTime),
+      endTime: this.normalizeTimestampMs(candidate.endTime),
+      observationCount: Math.max(0, Math.trunc(candidate.observationCount)),
+      keyDecisions: candidate.keyDecisions.filter(
+        (decision) => typeof decision === "string"
+      ),
+      filesModified: candidate.filesModified.filter(
+        (file) => typeof file === "string"
+      ),
+      summary: candidate.summary
+    };
+  }
+  extractSessionSummary(frame) {
+    const fromMetadata = this.parseSessionSummary(frame.metadata);
+    if (fromMetadata) {
+      return fromMetadata;
+    }
+    if (typeof frame.text !== "string") {
+      return null;
+    }
+    try {
+      return this.parseSessionSummary(JSON.parse(frame.text));
+    } catch {
+      return null;
+    }
+  }
+  extractSessionId(frame) {
+    const tags = Array.isArray(frame?.tags) ? frame.tags.filter((tag) => typeof tag === "string") : [];
+    const sessionTag = tags.find((tag) => tag.startsWith("session:"));
+    if (sessionTag) {
+      return sessionTag.slice("session:".length);
+    }
+    const metadataSessionId = frame?.metadata?.sessionId;
+    if (typeof metadataSessionId === "string" && metadataSessionId.length > 0) {
+      return metadataSessionId;
+    }
+    if (frame?.label === "session") {
+      const summary = this.extractSessionSummary(frame);
+      if (summary) {
+        return summary.id;
+      }
+    }
+    return null;
+  }
+  extractObservationType(frame) {
+    if (Array.isArray(frame?.labels)) {
+      for (const value of frame.labels) {
+        if (typeof value === "string") {
+          const normalized = value.toLowerCase();
+          if (OBSERVATION_TYPE_SET.has(normalized)) {
+            return normalized;
+          }
+        }
+      }
+    }
+    const label = typeof frame?.label === "string" ? frame.label : void 0;
+    if (label) {
+      const normalized = label.toLowerCase();
+      if (OBSERVATION_TYPE_SET.has(normalized)) {
+        return normalized;
+      }
+    }
+    const metadataType = frame?.metadata?.type;
+    if (typeof metadataType === "string") {
+      const normalized = metadataType.toLowerCase();
+      if (OBSERVATION_TYPE_SET.has(normalized)) {
+        return normalized;
+      }
+    }
+    return null;
+  }
+  extractPreviewFieldValues(preview, field) {
+    if (typeof preview !== "string" || preview.length === 0) {
+      return [];
+    }
+    const match = new RegExp(`(?:^|\\n)${field}:\\s*([^\\n]*)`, "i").exec(preview);
+    if (!match?.[1]) {
+      return [];
+    }
+    return match[1].split(/[^a-z0-9:_-]+/i).map((value) => value.trim()).filter(Boolean);
+  }
+  extractObservationTypeFromPreview(preview) {
+    const labels = this.extractPreviewFieldValues(preview, "labels");
+    const fromLabels = this.extractObservationType({ labels });
+    if (fromLabels) {
+      return fromLabels;
+    }
+    if (typeof preview !== "string" || preview.length === 0) {
+      return null;
+    }
+    const titleMatch = /(?:^|\n)title:\s*\[([^\]]+)\]/i.exec(preview);
+    if (!titleMatch?.[1]) {
+      return null;
+    }
+    const normalized = titleMatch[1].trim().toLowerCase();
+    if (OBSERVATION_TYPE_SET.has(normalized)) {
+      return normalized;
+    }
+    return null;
+  }
+  parseLeadingJsonObject(text) {
+    const start = text.indexOf("{");
+    if (start < 0) {
+      return null;
+    }
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let i = start; i < text.length; i++) {
+      const ch = text[i];
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (ch === "\\") {
+          escaped = true;
+        } else if (ch === '"') {
+          inString = false;
+        }
+        continue;
+      }
+      if (ch === '"') {
+        inString = true;
+        continue;
+      }
+      if (ch === "{") {
+        depth += 1;
+      } else if (ch === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          const candidate = text.slice(start, i + 1);
+          try {
+            return JSON.parse(candidate);
+          } catch {
+            return null;
+          }
+        }
+      }
+    }
+    return null;
+  }
+  extractSessionSummaryFromSearchHit(hit) {
+    if (typeof hit?.text !== "string") {
+      return null;
+    }
+    const parsed = this.parseLeadingJsonObject(hit.text);
+    return this.parseSessionSummary(parsed);
   }
   /**
    * Ask the memory a question (uses fast lexical search)
@@ -308,28 +581,68 @@ var Mind = class _Mind {
         limit: this.config.maxContextObservations,
         reverse: true
       });
-      const frames = Array.isArray(timeline) ? timeline : timeline.frames || [];
-      const recentObservations = frames.map(
-        (frame) => {
-          let ts = frame.metadata?.timestamp || frame.timestamp || 0;
-          if (ts > 0 && ts < 4102444800) {
-            ts = ts * 1e3;
+      const frames = this.toTimelineFrames(timeline);
+      const recentObservations = [];
+      const FRAME_INFO_BATCH_SIZE = 20;
+      for (let start = 0; start < frames.length; start += FRAME_INFO_BATCH_SIZE) {
+        const batch = frames.slice(start, start + FRAME_INFO_BATCH_SIZE);
+        const frameInfos = await Promise.all(batch.map(async (frame) => {
+          try {
+            return await this.memvid.getFrameInfo(frame.frame_id);
+          } catch {
+            return null;
           }
-          return {
-            id: frame.metadata?.observationId || frame.frame_id,
+        }));
+        for (let index = 0; index < batch.length; index++) {
+          const frame = batch[index];
+          const frameInfo = frameInfos[index];
+          const labels = Array.isArray(frameInfo?.labels) ? frameInfo.labels : [];
+          const tags = Array.isArray(frameInfo?.tags) ? frameInfo.tags : [];
+          const metadata = frameInfo?.metadata && typeof frameInfo.metadata === "object" ? frameInfo.metadata : {};
+          const toolTag = tags.find((tag) => typeof tag === "string" && tag.startsWith("tool:"));
+          const ts = this.normalizeTimestampMs(frameInfo?.timestamp || frame.timestamp || 0);
+          const observationType = this.extractObservationType({
+            label: labels[0],
+            labels,
+            metadata
+          }) || "discovery";
+          recentObservations.push({
+            id: String(metadata.observationId || frame.metadata?.observationId || frame.frame_id),
             timestamp: ts,
-            type: frame.label || frame.metadata?.type || "observation",
-            tool: frame.metadata?.tool,
-            summary: frame.title?.replace(/^\[.*?\]\s*/, "") || frame.preview?.slice(0, 100) || "",
-            content: frame.text || frame.preview || "",
-            metadata: frame.metadata
-          };
+            type: observationType,
+            tool: typeof toolTag === "string" ? toolTag.replace(/^tool:/, "") : typeof metadata.tool === "string" ? metadata.tool : void 0,
+            summary: frameInfo?.title?.replace(/^\[.*?\]\s*/, "") || frame.preview?.slice(0, 100) || "",
+            content: frame.preview || "",
+            metadata: {
+              ...metadata,
+              labels,
+              tags
+            }
+          });
         }
-      );
+      }
       let relevantMemories = [];
       if (query) {
         const searchResults = await this.searchUnlocked(query, 10);
         relevantMemories = searchResults.map((r) => r.observation);
+      }
+      const summarySearch = await this.memvid.find("Session Summary", {
+        k: 20,
+        mode: "lex"
+      });
+      const summaryHits = this.toSearchFrames(summarySearch);
+      const seenSessionIds = /* @__PURE__ */ new Set();
+      const sessionSummaries = [];
+      for (const hit of summaryHits) {
+        const summary = this.extractSessionSummaryFromSearchHit(hit);
+        if (!summary || seenSessionIds.has(summary.id)) {
+          continue;
+        }
+        seenSessionIds.add(summary.id);
+        sessionSummaries.push(summary);
+        if (sessionSummaries.length >= 5) {
+          break;
+        }
       }
       let tokenCount = 0;
       for (const obs of recentObservations) {
@@ -341,8 +654,7 @@ var Mind = class _Mind {
       return {
         recentObservations,
         relevantMemories,
-        sessionSummaries: [],
-        // TODO: Implement session summaries
+        sessionSummaries,
         tokenCount
       };
     });
@@ -351,25 +663,30 @@ var Mind = class _Mind {
    * Save a session summary
    */
   async saveSessionSummary(summary) {
-    const sessionSummary = {
-      id: this.sessionId,
-      startTime: Date.now() - 36e5,
-      // Approximate
-      endTime: Date.now(),
-      observationCount: 0,
-      // TODO: Track this
-      keyDecisions: summary.keyDecisions,
-      filesModified: summary.filesModified,
-      summary: summary.summary
-    };
     return this.withLock(async () => {
-      return this.memvid.put({
+      const endTime = Date.now();
+      const sessionSummary = {
+        id: this.sessionId,
+        startTime: this.sessionStartTime,
+        endTime,
+        observationCount: this.sessionObservationCount,
+        keyDecisions: summary.keyDecisions.slice(0, 20),
+        filesModified: summary.filesModified.slice(0, 50),
+        summary: summary.summary
+      };
+      const frameId = await this.memvid.put({
         title: `Session Summary: ${(/* @__PURE__ */ new Date()).toISOString().split("T")[0]}`,
         label: "session",
         text: JSON.stringify(sessionSummary, null, 2),
-        metadata: sessionSummary,
-        tags: ["session", "summary"]
+        metadata: {
+          ...sessionSummary,
+          sessionId: this.sessionId
+        },
+        tags: ["session", "summary", `session:${this.sessionId}`]
       });
+      this.cachedStats = null;
+      this.cachedStatsFrameCount = -1;
+      return frameId;
     });
   }
   /**
@@ -378,20 +695,68 @@ var Mind = class _Mind {
   async stats() {
     return this.withLock(async () => {
       const stats = await this.memvid.stats();
-      const timeline = await this.memvid.timeline({ limit: 1, reverse: false });
-      const recentTimeline = await this.memvid.timeline({ limit: 1, reverse: true });
-      const oldestFrames = Array.isArray(timeline) ? timeline : timeline.frames || [];
-      const newestFrames = Array.isArray(recentTimeline) ? recentTimeline : recentTimeline.frames || [];
-      return {
-        totalObservations: stats.frame_count || 0,
-        totalSessions: 0,
-        // TODO: Count unique sessions
-        oldestMemory: oldestFrames[0]?.metadata?.timestamp || oldestFrames[0]?.timestamp || 0,
-        newestMemory: newestFrames[0]?.metadata?.timestamp || newestFrames[0]?.timestamp || 0,
+      const totalFrames = Number(stats.frame_count) || 0;
+      if (this.cachedStats && this.cachedStatsFrameCount === totalFrames) {
+        return this.cachedStats;
+      }
+      const timeline = totalFrames > 0 ? await this.memvid.timeline({ limit: totalFrames, reverse: false }) : [];
+      const frames = this.toTimelineFrames(timeline);
+      const sessionIds = /* @__PURE__ */ new Set();
+      const topTypes = emptyTypeCounts();
+      let oldestMemory = 0;
+      let newestMemory = 0;
+      for (const frame of frames) {
+        const labels = this.extractPreviewFieldValues(frame.preview, "labels");
+        const tags = this.extractPreviewFieldValues(frame.preview, "tags");
+        const timestamp = this.normalizeTimestampMs(frame.timestamp || 0);
+        if (timestamp > 0) {
+          if (oldestMemory === 0 || timestamp < oldestMemory) {
+            oldestMemory = timestamp;
+          }
+          if (newestMemory === 0 || timestamp > newestMemory) {
+            newestMemory = timestamp;
+          }
+        }
+        const sessionId = this.extractSessionId({
+          ...frame,
+          labels,
+          tags
+        });
+        if (sessionId) {
+          sessionIds.add(sessionId);
+        }
+        const observationType = this.extractObservationType({
+          ...frame,
+          label: labels[0],
+          labels,
+          tags
+        }) || this.extractObservationTypeFromPreview(frame.preview);
+        if (observationType) {
+          topTypes[observationType] += 1;
+        }
+      }
+      const summarySearch = await this.memvid.find("Session Summary", {
+        k: 50,
+        mode: "lex"
+      });
+      const summaryHits = this.toSearchFrames(summarySearch);
+      for (const hit of summaryHits) {
+        const summary = this.extractSessionSummaryFromSearchHit(hit);
+        if (summary) {
+          sessionIds.add(summary.id);
+        }
+      }
+      const result = {
+        totalObservations: totalFrames,
+        totalSessions: sessionIds.size,
+        oldestMemory,
+        newestMemory,
         fileSize: stats.size_bytes || 0,
-        topTypes: {}
-        // TODO: Aggregate
+        topTypes
       };
+      this.cachedStats = result;
+      this.cachedStatsFrameCount = totalFrames;
+      return result;
     });
   }
   /**
@@ -546,18 +911,124 @@ function validateAdapterContractVersion(version, supportedMajor = SUPPORTED_ADAP
 
 // src/platforms/diagnostics.ts
 var DIAGNOSTIC_RETENTION_DAYS = 30;
-
-// src/platforms/diagnostic-store.ts
 var DAY_MS = 24 * 60 * 60 * 1e3;
+var DIAGNOSTIC_FILE_NAME = "platform-diagnostics.json";
+var TEST_DIAGNOSTIC_FILE_NAME = `memvid-platform-diagnostics-${process.pid}.json`;
 function sanitizeFieldNames(fieldNames) {
   if (!fieldNames || fieldNames.length === 0) {
     return void 0;
   }
   return [...new Set(fieldNames)].slice(0, 20);
 }
+function resolveDiagnosticStorePath() {
+  const explicitPath = process.env.MEMVID_DIAGNOSTIC_PATH?.trim();
+  const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  if (explicitPath) {
+    return resolve(projectDir, explicitPath);
+  }
+  if (process.env.VITEST) {
+    return resolve(tmpdir(), TEST_DIAGNOSTIC_FILE_NAME);
+  }
+  return resolve(projectDir, ".claude", DIAGNOSTIC_FILE_NAME);
+}
+function isDiagnosticRecord(value) {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const record = value;
+  return typeof record.diagnosticId === "string" && typeof record.timestamp === "number" && typeof record.platform === "string" && typeof record.errorType === "string" && (record.fieldNames === void 0 || Array.isArray(record.fieldNames) && record.fieldNames.every((name) => typeof name === "string")) && (record.severity === "warning" || record.severity === "error") && record.redacted === true && typeof record.retentionDays === "number" && typeof record.expiresAt === "number";
+}
+function pruneExpired(records, now = Date.now()) {
+  return records.filter((record) => record.expiresAt > now);
+}
+var DiagnosticPersistence = class {
+  filePath;
+  constructor(filePath) {
+    this.filePath = filePath;
+  }
+  append(record, now = Date.now()) {
+    this.withFileLock(() => {
+      const latest = this.loadFromDisk();
+      const next = pruneExpired([...latest, record], now);
+      this.persist(next);
+    });
+  }
+  list(now = Date.now()) {
+    return this.withFileLock(() => {
+      const latest = this.loadFromDisk();
+      const pruned = pruneExpired(latest, now);
+      if (pruned.length !== latest.length) {
+        this.persist(pruned);
+      }
+      return [...pruned];
+    });
+  }
+  loadFromDisk() {
+    if (!existsSync(this.filePath)) {
+      return [];
+    }
+    try {
+      const raw = readFileSync(this.filePath, "utf-8").trim();
+      if (!raw) {
+        return [];
+      }
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) {
+        return [];
+      }
+      return parsed.filter(isDiagnosticRecord);
+    } catch {
+      return [];
+    }
+  }
+  withFileLock(fn) {
+    mkdirSync(dirname(this.filePath), { recursive: true });
+    const release = lockfile.lockSync(this.filePath, { realpath: false });
+    try {
+      return fn();
+    } finally {
+      release();
+    }
+  }
+  persist(records) {
+    mkdirSync(dirname(this.filePath), { recursive: true });
+    const tmpPath = `${this.filePath}.tmp-${process.pid}-${Date.now()}`;
+    try {
+      writeFileSync(tmpPath, `${JSON.stringify(records, null, 2)}
+`, "utf-8");
+      try {
+        renameSync(tmpPath, this.filePath);
+      } catch {
+        rmSync(this.filePath, { force: true });
+        renameSync(tmpPath, this.filePath);
+      }
+    } finally {
+      rmSync(tmpPath, { force: true });
+    }
+  }
+};
+var persistence = null;
+var persistenceFilePath = null;
+var warnedPathChange = false;
+function getDiagnosticPersistence() {
+  const resolvedPath = resolveDiagnosticStorePath();
+  if (!persistence) {
+    persistence = new DiagnosticPersistence(resolvedPath);
+    persistenceFilePath = resolvedPath;
+    warnedPathChange = false;
+    return persistence;
+  }
+  if (persistenceFilePath && persistenceFilePath !== resolvedPath && !warnedPathChange) {
+    warnedPathChange = true;
+    console.error(
+      `[memvid-mind] Diagnostic store path changed from "${persistenceFilePath}" to "${resolvedPath}" after initialization; continuing with the original path.`
+    );
+  }
+  return persistence;
+}
 function createRedactedDiagnostic(input) {
   const timestamp = input.now ?? Date.now();
-  return {
+  const diagnostic = {
     diagnosticId: generateId(),
     timestamp,
     platform: input.platform,
@@ -568,6 +1039,11 @@ function createRedactedDiagnostic(input) {
     retentionDays: DIAGNOSTIC_RETENTION_DAYS,
     expiresAt: timestamp + DIAGNOSTIC_RETENTION_DAYS * DAY_MS
   };
+  try {
+    getDiagnosticPersistence().append(diagnostic);
+  } catch {
+  }
+  return diagnostic;
 }
 function resolveCanonicalProjectPath(context) {
   if (context.canonicalPath) {
@@ -653,7 +1129,7 @@ var MIN_OBSERVATIONS_FOR_SUMMARY = 3;
 async function captureFileChanges(mind) {
   try {
     const memoryPath = mind.getMemoryPath();
-    const workDir = memoryPath.replace(/\/\.claude\/.*$/, "");
+    const workDir = dirname(dirname(memoryPath));
     const allChangedFiles = [];
     let gitDiffContent = "";
     try {

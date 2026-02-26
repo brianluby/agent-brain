@@ -20,6 +20,7 @@ import {
 } from "../platforms/index.js";
 import { readFile, access } from "node:fs/promises";
 import { constants } from "node:fs";
+import { dirname } from "node:path";
 import { execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -38,7 +39,7 @@ async function captureFileChanges(mind: Awaited<ReturnType<typeof getMind>>) {
   try {
     // Get the working directory from the mind's memory path
     const memoryPath = mind.getMemoryPath();
-    const workDir = memoryPath.replace(/\/\.claude\/.*$/, "");
+    const workDir = dirname(dirname(memoryPath));
 
     const allChangedFiles: string[] = [];
     let gitDiffContent = "";

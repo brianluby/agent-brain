@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 function makeTempMemoryPath(): { dir: string; path: string } {
-  const dir = mkdtempSync(join(tmpdir(), "claude-brain-lock-"));
+  const dir = mkdtempSync(join(tmpdir(), "agent-brain-lock-"));
   return { dir, path: join(dir, "mind.mv2") };
 }
 
