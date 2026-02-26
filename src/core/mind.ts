@@ -75,6 +75,36 @@ async function loadSDK(): Promise<void> {
   sdkLoaded = true;
 }
 
+const OBSERVATION_TYPE_KEYS: ObservationType[] = [
+  "discovery",
+  "decision",
+  "problem",
+  "solution",
+  "pattern",
+  "warning",
+  "success",
+  "refactor",
+  "bugfix",
+  "feature",
+];
+
+const OBSERVATION_TYPE_SET = new Set<ObservationType>(OBSERVATION_TYPE_KEYS);
+
+function emptyTypeCounts(): Record<ObservationType, number> {
+  return {
+    discovery: 0,
+    decision: 0,
+    problem: 0,
+    solution: 0,
+    pattern: 0,
+    warning: 0,
+    success: 0,
+    refactor: 0,
+    bugfix: 0,
+    feature: 0,
+  };
+}
+
 /**
  * Mind - Claude's portable memory engine
  *
@@ -95,6 +125,10 @@ export class Mind {
   private config: MindConfig;
   private memoryPath: string;
   private sessionId: string;
+  private sessionStartTime: number;
+  private sessionObservationCount = 0;
+  private cachedStats: MindStats | null = null;
+  private cachedStatsFrameCount = -1;
   private initialized = false;
 
   private constructor(memvid: Memvid, config: MindConfig, memoryPath: string) {
@@ -102,6 +136,7 @@ export class Mind {
     this.config = config;
     this.memoryPath = memoryPath;
     this.sessionId = generateId();
+    this.sessionStartTime = Date.now();
   }
 
   /**
@@ -234,13 +269,21 @@ export class Mind {
           sessionId: this.sessionId,
           ...observation.metadata,
         },
-        tags: [observation.type, observation.tool].filter(Boolean) as string[],
+        tags: [
+          observation.type,
+          `session:${this.sessionId}`,
+          observation.tool ? `tool:${observation.tool}` : undefined,
+        ].filter(Boolean) as string[],
       });
     });
 
     if (this.config.debug) {
       console.error(`[memvid-mind] Remembered: ${observation.summary}`);
     }
+
+    this.sessionObservationCount += 1;
+    this.cachedStats = null;
+    this.cachedStatsFrameCount = -1;
 
     return frameId;
   }
@@ -257,19 +300,218 @@ export class Mind {
   private async searchUnlocked(query: string, limit: number): Promise<MemorySearchResult[]> {
     const results = await this.memvid.find(query, { k: limit, mode: "lex" });
 
-    return (results.frames || []).map((frame: any) => ({
+    const frames = Array.isArray(results?.hits)
+      ? results.hits
+      : Array.isArray(results?.frames)
+        ? results.frames
+        : [];
+
+    return frames.map((frame: any) => {
+      const toolTag = Array.isArray(frame.tags)
+        ? frame.tags.find((tag: unknown) => typeof tag === "string" && tag.startsWith("tool:"))
+        : undefined;
+
+      const labels = Array.isArray(frame.labels)
+        ? frame.labels.filter((label: unknown): label is string => typeof label === "string")
+        : [];
+
+      const observationType = this.extractObservationType({
+        label: frame.label,
+        labels,
+      }) || "discovery";
+
+      const timestamp = this.normalizeTimestampMs(
+        frame.metadata?.timestamp
+        || frame.timestamp
+        || (typeof frame.created_at === "string" ? Date.parse(frame.created_at) : 0)
+      );
+
+      return {
       observation: {
-        id: frame.metadata?.observationId || frame.frame_id,
-        timestamp: frame.metadata?.timestamp || 0,
-        type: frame.label as ObservationType,
-        tool: frame.metadata?.tool,
-        summary: frame.title?.replace(/^\[.*?\]\s*/, "") || "",
-        content: frame.text || "",
-        metadata: frame.metadata,
+        id: String(frame.metadata?.observationId || frame.frame_id || generateId()),
+        timestamp,
+        type: observationType,
+        tool: typeof toolTag === "string" ? toolTag.replace(/^tool:/, "") : undefined,
+        summary: frame.title?.replace(/^\[.*?\]\s*/, "") || frame.snippet || "",
+        content: frame.text || frame.snippet || "",
+        metadata: {
+          labels,
+          tags: frame.tags,
+        },
       },
       score: frame.score || 0,
       snippet: frame.snippet || frame.text?.slice(0, 200) || "",
-    }));
+    };
+    });
+  }
+
+  private toTimelineFrames(timelineResult: any): any[] {
+    return Array.isArray(timelineResult) ? timelineResult : (timelineResult.frames || []);
+  }
+
+  private normalizeTimestampMs(value: unknown): number {
+    if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+      return 0;
+    }
+
+    // SDK can return seconds in timeline metadata.
+    if (value < 4102444800) {
+      return Math.round(value * 1000);
+    }
+
+    return Math.round(value);
+  }
+
+  private parseSessionSummary(value: unknown): SessionSummary | null {
+    if (!value || typeof value !== "object") {
+      return null;
+    }
+
+    const candidate = value as Record<string, unknown>;
+    if (
+      typeof candidate.id !== "string" ||
+      typeof candidate.startTime !== "number" ||
+      typeof candidate.endTime !== "number" ||
+      typeof candidate.observationCount !== "number" ||
+      typeof candidate.summary !== "string" ||
+      !Array.isArray(candidate.keyDecisions) ||
+      !Array.isArray(candidate.filesModified)
+    ) {
+      return null;
+    }
+
+    return {
+      id: candidate.id,
+      startTime: this.normalizeTimestampMs(candidate.startTime),
+      endTime: this.normalizeTimestampMs(candidate.endTime),
+      observationCount: Math.max(0, Math.trunc(candidate.observationCount)),
+      keyDecisions: candidate.keyDecisions.filter(
+        (decision): decision is string => typeof decision === "string"
+      ),
+      filesModified: candidate.filesModified.filter(
+        (file): file is string => typeof file === "string"
+      ),
+      summary: candidate.summary,
+    };
+  }
+
+  private extractSessionSummary(frame: any): SessionSummary | null {
+    const fromMetadata = this.parseSessionSummary(frame.metadata);
+    if (fromMetadata) {
+      return fromMetadata;
+    }
+
+    if (typeof frame.text !== "string") {
+      return null;
+    }
+
+    try {
+      return this.parseSessionSummary(JSON.parse(frame.text));
+    } catch {
+      return null;
+    }
+  }
+
+  private extractSessionId(frame: any): string | null {
+    const tags = Array.isArray(frame?.tags)
+      ? frame.tags.filter((tag: unknown): tag is string => typeof tag === "string")
+      : [];
+    const sessionTag = tags.find((tag) => tag.startsWith("session:"));
+    if (sessionTag) {
+      return sessionTag.slice("session:".length);
+    }
+
+    const metadataSessionId = frame?.metadata?.sessionId;
+    if (typeof metadataSessionId === "string" && metadataSessionId.length > 0) {
+      return metadataSessionId;
+    }
+
+    if (frame?.label === "session") {
+      const summary = this.extractSessionSummary(frame);
+      if (summary) {
+        return summary.id;
+      }
+    }
+
+    return null;
+  }
+
+  private extractObservationType(frame: any): ObservationType | null {
+    if (Array.isArray(frame?.labels)) {
+      for (const value of frame.labels) {
+        if (typeof value === "string" && OBSERVATION_TYPE_SET.has(value as ObservationType)) {
+          return value as ObservationType;
+        }
+      }
+    }
+
+    const label = typeof frame?.label === "string" ? frame.label : undefined;
+    if (label && OBSERVATION_TYPE_SET.has(label as ObservationType)) {
+      return label as ObservationType;
+    }
+
+    const metadataType = frame?.metadata?.type;
+    if (typeof metadataType === "string" && OBSERVATION_TYPE_SET.has(metadataType as ObservationType)) {
+      return metadataType as ObservationType;
+    }
+
+    return null;
+  }
+
+  private parseLeadingJsonObject(text: string): unknown | null {
+    const start = text.indexOf("{");
+    if (start < 0) {
+      return null;
+    }
+
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+
+    for (let i = start; i < text.length; i++) {
+      const ch = text[i];
+
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (ch === "\\") {
+          escaped = true;
+        } else if (ch === '"') {
+          inString = false;
+        }
+        continue;
+      }
+
+      if (ch === '"') {
+        inString = true;
+        continue;
+      }
+
+      if (ch === "{") {
+        depth += 1;
+      } else if (ch === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          const candidate = text.slice(start, i + 1);
+          try {
+            return JSON.parse(candidate);
+          } catch {
+            return null;
+          }
+        }
+      }
+    }
+
+    return null;
+  }
+
+  private extractSessionSummaryFromSearchHit(hit: any): SessionSummary | null {
+    if (typeof hit?.text !== "string") {
+      return null;
+    }
+
+    const parsed = this.parseLeadingJsonObject(hit.text);
+    return this.parseSessionSummary(parsed);
   }
 
   /**
@@ -293,34 +535,60 @@ export class Mind {
         reverse: true,
       });
 
-      // SDK returns array directly or { frames: [...] }
-      const frames = Array.isArray(timeline) ? timeline : (timeline.frames || []);
+      const frames = this.toTimelineFrames(timeline);
 
-      const recentObservations: Observation[] = frames.map(
-        (frame: any) => {
-          // Get timestamp - SDK returns seconds, convert to milliseconds if needed
-          let ts = frame.metadata?.timestamp || frame.timestamp || 0;
-          // If timestamp looks like seconds (before year 2100 in seconds), convert to ms
-          if (ts > 0 && ts < 4102444800) {
-            ts = ts * 1000;
-          }
-          return {
-            id: frame.metadata?.observationId || frame.frame_id,
-            timestamp: ts,
-            type: (frame.label || frame.metadata?.type || "observation") as ObservationType,
-            tool: frame.metadata?.tool,
-            summary: frame.title?.replace(/^\[.*?\]\s*/, "") || frame.preview?.slice(0, 100) || "",
-            content: frame.text || frame.preview || "",
-            metadata: frame.metadata,
-          };
-        }
-      );
+      const recentObservations = await Promise.all(frames.map(async (frame: any) => {
+        const frameInfo = await this.memvid.getFrameInfo(frame.frame_id);
+        const labels = Array.isArray(frameInfo?.labels) ? frameInfo.labels : [];
+        const tags = Array.isArray(frameInfo?.tags) ? frameInfo.tags : [];
+        const toolTag = tags.find((tag) => typeof tag === "string" && tag.startsWith("tool:"));
+        const ts = this.normalizeTimestampMs(frameInfo?.timestamp || frame.timestamp || 0);
+        const observationType = this.extractObservationType({
+          label: labels[0],
+          labels,
+        }) || "discovery";
+
+        return {
+          id: String(frame.frame_id),
+          timestamp: ts,
+          type: observationType,
+          tool: typeof toolTag === "string" ? toolTag.replace(/^tool:/, "") : undefined,
+          summary: frameInfo?.title?.replace(/^\[.*?\]\s*/, "") || frame.preview?.slice(0, 100) || "",
+          content: frame.preview || "",
+          metadata: {
+            labels,
+            tags,
+          },
+        } as Observation;
+      }));
 
       // Get relevant memories if query provided
       let relevantMemories: Observation[] = [];
       if (query) {
         const searchResults = await this.searchUnlocked(query, 10);
         relevantMemories = searchResults.map((r) => r.observation);
+      }
+
+      const summarySearch = await this.memvid.find("Session Summary", {
+        k: 20,
+        mode: "lex",
+      });
+      const summaryHits = Array.isArray(summarySearch?.hits)
+        ? summarySearch.hits
+        : [];
+      const seenSessionIds = new Set<string>();
+      const sessionSummaries: SessionSummary[] = [];
+
+      for (const hit of summaryHits) {
+        const summary = this.extractSessionSummaryFromSearchHit(hit);
+        if (!summary || seenSessionIds.has(summary.id)) {
+          continue;
+        }
+        seenSessionIds.add(summary.id);
+        sessionSummaries.push(summary);
+        if (sessionSummaries.length >= 5) {
+          break;
+        }
       }
 
       // Build context with token limit
@@ -339,7 +607,7 @@ export class Mind {
       return {
         recentObservations,
         relevantMemories,
-        sessionSummaries: [], // TODO: Implement session summaries
+        sessionSummaries,
         tokenCount,
       };
     });
@@ -353,24 +621,32 @@ export class Mind {
     filesModified: string[];
     summary: string;
   }): Promise<string> {
-    const sessionSummary: SessionSummary = {
-      id: this.sessionId,
-      startTime: Date.now() - 3600000, // Approximate
-      endTime: Date.now(),
-      observationCount: 0, // TODO: Track this
-      keyDecisions: summary.keyDecisions,
-      filesModified: summary.filesModified,
-      summary: summary.summary,
-    };
-
     return this.withLock(async () => {
-      return this.memvid.put({
+      const endTime = Date.now();
+      const sessionSummary: SessionSummary = {
+        id: this.sessionId,
+        startTime: this.sessionStartTime,
+        endTime,
+        observationCount: this.sessionObservationCount,
+        keyDecisions: summary.keyDecisions.slice(0, 20),
+        filesModified: summary.filesModified.slice(0, 50),
+        summary: summary.summary,
+      };
+
+      const frameId = await this.memvid.put({
         title: `Session Summary: ${new Date().toISOString().split("T")[0]}`,
         label: "session",
         text: JSON.stringify(sessionSummary, null, 2),
-        metadata: sessionSummary as unknown as Record<string, unknown>,
-        tags: ["session", "summary"],
+        metadata: {
+          ...sessionSummary,
+          sessionId: this.sessionId,
+        },
+        tags: ["session", "summary", `session:${this.sessionId}`],
       });
+
+      this.cachedStats = null;
+      this.cachedStatsFrameCount = -1;
+      return frameId;
     });
   }
 
@@ -380,21 +656,71 @@ export class Mind {
   async stats(): Promise<MindStats> {
     return this.withLock(async () => {
       const stats = await this.memvid.stats();
-      const timeline = await this.memvid.timeline({ limit: 1, reverse: false });
-      const recentTimeline = await this.memvid.timeline({ limit: 1, reverse: true });
+      const totalFrames = Number(stats.frame_count) || 0;
 
-      // SDK returns array directly or { frames: [...] }
-      const oldestFrames = Array.isArray(timeline) ? timeline : (timeline.frames || []);
-      const newestFrames = Array.isArray(recentTimeline) ? recentTimeline : (recentTimeline.frames || []);
+      if (this.cachedStats && this.cachedStatsFrameCount === totalFrames) {
+        return this.cachedStats;
+      }
 
-      return {
-        totalObservations: (stats.frame_count as number) || 0,
-        totalSessions: 0, // TODO: Count unique sessions
-        oldestMemory: (oldestFrames[0] as any)?.metadata?.timestamp || (oldestFrames[0] as any)?.timestamp || 0,
-        newestMemory: (newestFrames[0] as any)?.metadata?.timestamp || (newestFrames[0] as any)?.timestamp || 0,
+      const timeline = totalFrames > 0
+        ? await this.memvid.timeline({ limit: totalFrames, reverse: false })
+        : [];
+      const frames = this.toTimelineFrames(timeline);
+
+      const sessionIds = new Set<string>();
+      const topTypes = emptyTypeCounts();
+      let oldestMemory = 0;
+      let newestMemory = 0;
+
+      for (const frame of frames) {
+        const frameInfo = await this.memvid.getFrameInfo(frame.frame_id);
+        const labels = Array.isArray(frameInfo?.labels) ? frameInfo.labels : [];
+        const tags = Array.isArray(frameInfo?.tags) ? frameInfo.tags : [];
+
+        const timestamp = this.normalizeTimestampMs(frameInfo?.timestamp || frame.timestamp || 0);
+        if (timestamp > 0) {
+          if (oldestMemory === 0 || timestamp < oldestMemory) {
+            oldestMemory = timestamp;
+          }
+          if (newestMemory === 0 || timestamp > newestMemory) {
+            newestMemory = timestamp;
+          }
+        }
+
+        const sessionId = this.extractSessionId({
+          ...frame,
+          labels,
+          tags,
+          metadata: frameInfo?.metadata,
+        });
+        if (sessionId) {
+          sessionIds.add(sessionId);
+        }
+
+        const observationType = this.extractObservationType({
+          ...frame,
+          label: frameInfo?.labels?.[0],
+          labels,
+          tags,
+          metadata: frameInfo?.metadata,
+        });
+        if (observationType) {
+          topTypes[observationType] += 1;
+        }
+      }
+
+      const result: MindStats = {
+        totalObservations: totalFrames,
+        totalSessions: sessionIds.size,
+        oldestMemory,
+        newestMemory,
         fileSize: (stats.size_bytes as number) || 0,
-        topTypes: {} as Record<ObservationType, number>, // TODO: Aggregate
+        topTypes,
       };
+
+      this.cachedStats = result;
+      this.cachedStatsFrameCount = totalFrames;
+      return result;
     });
   }
 

@@ -105,6 +105,10 @@ log_warning() {
     echo "WARNING: $1" >&2
 }
 
+escape_sed_replacement() {
+    printf '%s' "$1" | sed -e 's/[&\\]/\\&/g'
+}
+
 # Cleanup function for temporary files
 cleanup() {
     local exit_code=$?
@@ -254,7 +258,7 @@ get_commands_for_language() {
             echo "cargo test && cargo clippy"
             ;;
         *"JavaScript"*|*"TypeScript"*)
-            echo "npm test \\&\\& npm run lint"
+            echo "npm test && npm run lint"
             ;;
         *)
             echo "# Add commands for $lang"
@@ -300,11 +304,24 @@ create_new_agent_file() {
     local language_conventions
     language_conventions=$(get_language_conventions "$NEW_LANG")
     
-    # Perform substitutions with error checking using safer approach
-    # Escape special characters for sed by using a different delimiter or escaping
-    local escaped_lang=$(printf '%s\n' "$NEW_LANG" | sed 's/[\[\.*^$()+{}|]/\\&/g')
-    local escaped_framework=$(printf '%s\n' "$NEW_FRAMEWORK" | sed 's/[\[\.*^$()+{}|]/\\&/g')
-    local escaped_branch=$(printf '%s\n' "$CURRENT_BRANCH" | sed 's/[\[\.*^$()+{}|]/\\&/g')
+    # Escape values for sed replacement context
+    local escaped_lang
+    escaped_lang=$(escape_sed_replacement "$NEW_LANG")
+    local escaped_framework
+    escaped_framework=$(escape_sed_replacement "$NEW_FRAMEWORK")
+    local escaped_branch
+    escaped_branch=$(escape_sed_replacement "$CURRENT_BRANCH")
+
+    local escaped_project_name
+    escaped_project_name=$(escape_sed_replacement "$project_name")
+    local escaped_current_date
+    escaped_current_date=$(escape_sed_replacement "$current_date")
+    local escaped_project_structure
+    escaped_project_structure=$(escape_sed_replacement "$project_structure")
+    local escaped_commands
+    escaped_commands=$(escape_sed_replacement "$commands")
+    local escaped_language_conventions
+    escaped_language_conventions=$(escape_sed_replacement "$language_conventions")
     
     # Build technology stack and recent change strings conditionally
     local tech_stack
@@ -330,12 +347,12 @@ create_new_agent_file() {
     fi
 
     local substitutions=(
-        "s|\[PROJECT NAME\]|$project_name|"
-        "s|\[DATE\]|$current_date|"
+        "s|\[PROJECT NAME\]|$escaped_project_name|"
+        "s|\[DATE\]|$escaped_current_date|"
         "s|\[EXTRACTED FROM ALL PLAN.MD FILES\]|$tech_stack|"
-        "s|\[ACTUAL STRUCTURE FROM PLANS\]|$project_structure|g"
-        "s|\[ONLY COMMANDS FOR ACTIVE TECHNOLOGIES\]|$commands|"
-        "s|\[LANGUAGE-SPECIFIC, ONLY FOR LANGUAGES IN USE\]|$language_conventions|"
+        "s|\[ACTUAL STRUCTURE FROM PLANS\]|$escaped_project_structure|g"
+        "s|\[ONLY COMMANDS FOR ACTIVE TECHNOLOGIES\]|$escaped_commands|"
+        "s|\[LANGUAGE-SPECIFIC, ONLY FOR LANGUAGES IN USE\]|$escaped_language_conventions|"
         "s|\[LAST 3 FEATURES AND WHAT THEY ADDED\]|$recent_change|"
     )
     
@@ -788,4 +805,3 @@ main() {
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     main "$@"
 fi
-

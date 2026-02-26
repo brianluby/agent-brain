@@ -19,9 +19,6 @@ function skipWithDiagnostic(
   errorType: string,
   fieldNames?: string[]
 ): ProcessPlatformEventResult {
-  // TODO: FR-012/FR-016 — Diagnostics are created but not yet persisted.
-  // Implement DiagnosticPersistence to write records to disk and enforce
-  // the 30-day retention window (DIAGNOSTIC_RETENTION_DAYS expiry).
   return {
     skipped: true,
     reason: errorType,
