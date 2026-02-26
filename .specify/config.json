@@ -1,0 +1,5 @@
+{
+  "git_mode": "worktree",
+  "worktree_strategy": "sibling",
+  "worktree_custom_path": ""
+}

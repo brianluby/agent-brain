@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { readdirSync, unlinkSync, existsSync } from 'fs';
-import { resolve, dirname } from 'path';
+import { dirname, resolve, isAbsolute, relative, sep } from 'path';
 import { mkdir, open } from 'fs/promises';
 import { randomBytes } from 'crypto';
 import lockfile from 'proper-lockfile';
+import { fileURLToPath } from 'url';
 
 // src/types.ts
 var DEFAULT_CONFIG = {
@@ -22,9 +23,9 @@ function estimateTokens(text) {
 }
 async function readStdin() {
   const chunks = [];
-  return new Promise((resolve2, reject) => {
+  return new Promise((resolve4, reject) => {
     process.stdin.on("data", (chunk) => chunks.push(chunk));
-    process.stdin.on("end", () => resolve2(Buffer.concat(chunks).toString("utf8")));
+    process.stdin.on("end", () => resolve4(Buffer.concat(chunks).toString("utf8")));
     process.stdin.on("error", reject);
   });
 }
@@ -83,6 +84,59 @@ async function withMemvidLock(lockPath, fn) {
     await release();
   }
 }
+function defaultPlatformRelativePath(platform) {
+  const safePlatform = platform.replace(/[^a-z0-9_-]/gi, "-");
+  return `.claude/mind-${safePlatform}.mv2`;
+}
+function resolveInsideProject(projectDir, candidatePath) {
+  if (isAbsolute(candidatePath)) {
+    return resolve(candidatePath);
+  }
+  const root = resolve(projectDir);
+  const resolved = resolve(root, candidatePath);
+  const rel = relative(root, resolved);
+  if (rel === ".." || rel.startsWith(`..${sep}`)) {
+    throw new Error("Resolved memory path must stay inside projectDir");
+  }
+  return resolved;
+}
+function resolveMemoryPathPolicy(input) {
+  if (input.platformOptIn) {
+    const relativePath = input.platformRelativePath || defaultPlatformRelativePath(input.platform);
+    return {
+      mode: "platform_opt_in",
+      memoryPath: resolveInsideProject(input.projectDir, relativePath)
+    };
+  }
+  return {
+    mode: "legacy_first",
+    memoryPath: resolveInsideProject(input.projectDir, input.legacyRelativePath)
+  };
+}
+
+// src/platforms/platform-detector.ts
+function normalizePlatform(value) {
+  if (!value) return void 0;
+  const normalized = value.trim().toLowerCase();
+  return normalized.length > 0 ? normalized : void 0;
+}
+function detectPlatformFromEnv() {
+  const explicitFromEnv = normalizePlatform(process.env.MEMVID_PLATFORM);
+  if (explicitFromEnv) {
+    return explicitFromEnv;
+  }
+  if (process.env.OPENCODE === "1") {
+    return "opencode";
+  }
+  return "claude";
+}
+function detectPlatform(input) {
+  const explicitFromHook = normalizePlatform(input.platform);
+  if (explicitFromHook) {
+    return explicitFromHook;
+  }
+  return detectPlatformFromEnv();
+}
 
 // src/core/mind.ts
 function pruneBackups(memoryPath, keepCount) {
@@ -119,11 +173,13 @@ async function loadSDK() {
 var Mind = class _Mind {
   memvid;
   config;
+  memoryPath;
   sessionId;
   initialized = false;
-  constructor(memvid, config) {
+  constructor(memvid, config, memoryPath) {
     this.memvid = memvid;
     this.config = config;
+    this.memoryPath = memoryPath;
     this.sessionId = generateId();
   }
   /**
@@ -133,7 +189,16 @@ var Mind = class _Mind {
     await loadSDK();
     const config = { ...DEFAULT_CONFIG, ...configOverrides };
     const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-    const memoryPath = resolve(projectDir, config.memoryPath);
+    const platform = detectPlatformFromEnv();
+    const optIn = process.env.MEMVID_PLATFORM_PATH_OPT_IN === "1";
+    const pathPolicy = resolveMemoryPathPolicy({
+      projectDir,
+      platform,
+      legacyRelativePath: config.memoryPath,
+      platformRelativePath: process.env.MEMVID_PLATFORM_MEMORY_PATH,
+      platformOptIn: optIn
+    });
+    const memoryPath = pathPolicy.memoryPath;
     const memoryDir = dirname(memoryPath);
     await mkdir(memoryDir, { recursive: true });
     let memvid;
@@ -178,7 +243,7 @@ var Mind = class _Mind {
         throw openError;
       }
     });
-    const mind = new _Mind(memvid, config);
+    const mind = new _Mind(memvid, config, memoryPath);
     mind.initialized = true;
     pruneBackups(memoryPath, 3);
     if (config.debug) {
@@ -365,7 +430,7 @@ var Mind = class _Mind {
    * Get the memory file path
    */
   getMemoryPath() {
-    return resolve(process.cwd(), this.config.memoryPath);
+    return this.memoryPath;
   }
   /**
    * Check if initialized
@@ -657,13 +722,239 @@ function getCompressionStats(originalSize, compressedSize) {
   return { ratio, saved, savedPercent };
 }
 
-// src/hooks/post-tool-use.ts
+// src/platforms/registry.ts
+var AdapterRegistry = class {
+  adapters = /* @__PURE__ */ new Map();
+  register(adapter) {
+    this.adapters.set(adapter.platform, adapter);
+  }
+  resolve(platform) {
+    return this.adapters.get(platform) || null;
+  }
+  listPlatforms() {
+    return [...this.adapters.keys()].sort();
+  }
+};
+
+// src/platforms/events.ts
+function createEventId() {
+  return generateId();
+}
+
+// src/platforms/adapters/create-adapter.ts
+var CONTRACT_VERSION = "1.0.0";
+function createAdapter(platform) {
+  function projectContext(input) {
+    return {
+      platformProjectId: input.project_id,
+      canonicalPath: input.cwd,
+      cwd: input.cwd
+    };
+  }
+  return {
+    platform,
+    contractVersion: CONTRACT_VERSION,
+    normalizeSessionStart(input) {
+      return {
+        eventId: createEventId(),
+        eventType: "session_start",
+        platform,
+        contractVersion: input.contract_version?.trim() || CONTRACT_VERSION,
+        sessionId: input.session_id,
+        timestamp: Date.now(),
+        projectContext: projectContext(input),
+        payload: {
+          hookEventName: input.hook_event_name,
+          permissionMode: input.permission_mode,
+          transcriptPath: input.transcript_path
+        }
+      };
+    },
+    normalizeToolObservation(input) {
+      if (!input.tool_name) return null;
+      return {
+        eventId: createEventId(),
+        eventType: "tool_observation",
+        platform,
+        contractVersion: input.contract_version?.trim() || CONTRACT_VERSION,
+        sessionId: input.session_id,
+        timestamp: Date.now(),
+        projectContext: projectContext(input),
+        payload: {
+          toolName: input.tool_name,
+          toolInput: input.tool_input,
+          toolResponse: input.tool_response
+        }
+      };
+    },
+    normalizeSessionStop(input) {
+      return {
+        eventId: createEventId(),
+        eventType: "session_stop",
+        platform,
+        contractVersion: input.contract_version?.trim() || CONTRACT_VERSION,
+        sessionId: input.session_id,
+        timestamp: Date.now(),
+        projectContext: projectContext(input),
+        payload: {
+          transcriptPath: input.transcript_path
+        }
+      };
+    }
+  };
+}
+
+// src/platforms/adapters/claude.ts
+var claudeAdapter = createAdapter("claude");
+
+// src/platforms/adapters/opencode.ts
+var opencodeAdapter = createAdapter("opencode");
+
+// src/platforms/contract.ts
+var SUPPORTED_ADAPTER_CONTRACT_MAJOR = 1;
+var SEMVER_PATTERN = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/;
+function parseContractMajor(version) {
+  const match = SEMVER_PATTERN.exec(version.trim());
+  if (!match) {
+    return null;
+  }
+  return Number(match[1]);
+}
+function validateAdapterContractVersion(version, supportedMajor = SUPPORTED_ADAPTER_CONTRACT_MAJOR) {
+  const adapterMajor = parseContractMajor(version);
+  if (adapterMajor === null) {
+    return {
+      compatible: false,
+      supportedMajor,
+      adapterMajor: null,
+      reason: "invalid_contract_version"
+    };
+  }
+  if (adapterMajor !== supportedMajor) {
+    return {
+      compatible: false,
+      supportedMajor,
+      adapterMajor,
+      reason: "incompatible_contract_major"
+    };
+  }
+  return {
+    compatible: true,
+    supportedMajor,
+    adapterMajor
+  };
+}
+
+// src/platforms/diagnostics.ts
+var DIAGNOSTIC_RETENTION_DAYS = 30;
+
+// src/platforms/diagnostic-store.ts
+var DAY_MS = 24 * 60 * 60 * 1e3;
+function sanitizeFieldNames(fieldNames) {
+  if (!fieldNames || fieldNames.length === 0) {
+    return void 0;
+  }
+  return [...new Set(fieldNames)].slice(0, 20);
+}
+function createRedactedDiagnostic(input) {
+  const timestamp = input.now ?? Date.now();
+  return {
+    diagnosticId: generateId(),
+    timestamp,
+    platform: input.platform,
+    errorType: input.errorType,
+    fieldNames: sanitizeFieldNames(input.fieldNames),
+    severity: input.severity ?? "warning",
+    redacted: true,
+    retentionDays: DIAGNOSTIC_RETENTION_DAYS,
+    expiresAt: timestamp + DIAGNOSTIC_RETENTION_DAYS * DAY_MS
+  };
+}
+function resolveCanonicalProjectPath(context) {
+  if (context.canonicalPath) {
+    return resolve(context.canonicalPath);
+  }
+  if (context.cwd) {
+    return resolve(context.cwd);
+  }
+  return void 0;
+}
+function resolveProjectIdentityKey(context) {
+  if (context.platformProjectId && context.platformProjectId.trim().length > 0) {
+    return {
+      key: context.platformProjectId.trim(),
+      source: "platform_project_id",
+      canonicalPath: resolveCanonicalProjectPath(context)
+    };
+  }
+  const canonicalPath = resolveCanonicalProjectPath(context);
+  if (canonicalPath) {
+    return {
+      key: canonicalPath,
+      source: "canonical_path",
+      canonicalPath
+    };
+  }
+  return {
+    key: null,
+    source: "unresolved"
+  };
+}
+
+// src/platforms/pipeline.ts
+function skipWithDiagnostic(platform, errorType, fieldNames) {
+  return {
+    skipped: true,
+    reason: errorType,
+    diagnostic: createRedactedDiagnostic({
+      platform,
+      errorType,
+      fieldNames,
+      severity: "warning"
+    })
+  };
+}
+function processPlatformEvent(event) {
+  const contractValidation = validateAdapterContractVersion(
+    event.contractVersion,
+    SUPPORTED_ADAPTER_CONTRACT_MAJOR
+  );
+  if (!contractValidation.compatible) {
+    return skipWithDiagnostic(event.platform, contractValidation.reason ?? "incompatible_contract", ["contractVersion"]);
+  }
+  const identity = resolveProjectIdentityKey(event.projectContext);
+  if (!identity.key) {
+    return skipWithDiagnostic(event.platform, "missing_project_identity", [
+      "platformProjectId",
+      "canonicalPath",
+      "cwd"
+    ]);
+  }
+  return {
+    skipped: false,
+    projectIdentityKey: identity.key
+  };
+}
+
+// src/platforms/index.ts
+var defaultRegistry = null;
+function getDefaultAdapterRegistry() {
+  if (!defaultRegistry) {
+    const registry = new AdapterRegistry();
+    registry.register(claudeAdapter);
+    registry.register(opencodeAdapter);
+    defaultRegistry = Object.freeze({
+      resolve: (platform) => registry.resolve(platform),
+      listPlatforms: () => registry.listPlatforms()
+    });
+  }
+  return defaultRegistry;
+}
 var OBSERVED_TOOLS = /* @__PURE__ */ new Set([
   "Read",
   "Edit",
   "Write",
   "Update",
-  // Claude Code may use Update for edits
   "Bash",
   "Grep",
   "Glob",
@@ -673,8 +964,10 @@ var OBSERVED_TOOLS = /* @__PURE__ */ new Set([
   "NotebookEdit"
 ]);
 var MIN_OUTPUT_LENGTH = 50;
-var recentObservations = /* @__PURE__ */ new Map();
 var DEDUP_WINDOW_MS = 6e4;
+var ALWAYS_CAPTURE_TOOLS = /* @__PURE__ */ new Set(["Edit", "Write", "Update", "NotebookEdit"]);
+var MAX_OUTPUT_LENGTH = 2500;
+var recentObservations = /* @__PURE__ */ new Map();
 function getObservationKey(toolName, toolInput) {
   const inputStr = toolInput ? JSON.stringify(toolInput).slice(0, 200) : "";
   return `${toolName}:${inputStr}`;
@@ -695,93 +988,22 @@ function markObserved(key) {
     }
   }
 }
-var ALWAYS_CAPTURE_TOOLS = /* @__PURE__ */ new Set(["Edit", "Write", "Update", "NotebookEdit"]);
-var MAX_OUTPUT_LENGTH = 2500;
-async function main() {
-  try {
-    const input = await readStdin();
-    const hookInput = JSON.parse(input);
-    const { tool_name, tool_input, tool_response } = hookInput;
-    debug(`Tool received: ${tool_name}`);
-    if (!tool_name || !OBSERVED_TOOLS.has(tool_name)) {
-      debug(`Skipping tool: ${tool_name} (not in OBSERVED_TOOLS)`);
-      writeOutput({ continue: true });
-      return;
-    }
-    const dedupKey = getObservationKey(tool_name, tool_input);
-    if (isDuplicate(dedupKey)) {
-      debug(`Skipping duplicate observation: ${tool_name}`);
-      writeOutput({ continue: true });
-      return;
-    }
-    const tool_output = typeof tool_response === "string" ? tool_response : JSON.stringify(tool_response, null, 2);
-    const alwaysCapture = ALWAYS_CAPTURE_TOOLS.has(tool_name);
-    if (!alwaysCapture && (!tool_output || tool_output.length < MIN_OUTPUT_LENGTH)) {
-      writeOutput({ continue: true });
-      return;
-    }
-    let effectiveOutput = tool_output || "";
-    if (alwaysCapture && effectiveOutput.length < MIN_OUTPUT_LENGTH) {
-      const filePath = tool_input?.file_path || "unknown file";
-      const fileName = filePath.split("/").pop() || "file";
-      effectiveOutput = `File modified: ${fileName}
-Path: ${filePath}
-Tool: ${tool_name}`;
-    }
-    if (effectiveOutput.includes("<system-reminder>") || effectiveOutput.includes("<memvid-mind-context>")) {
-      writeOutput({ continue: true });
-      return;
-    }
-    const { compressed, wasCompressed, originalSize } = compressToolOutput(
-      tool_name,
-      tool_input,
-      effectiveOutput
-    );
-    if (wasCompressed) {
-      const stats = getCompressionStats(originalSize, compressed.length);
-      debug(`\u{1F5DC}\uFE0F Endless Mode: ${stats.savedPercent}% compression (${originalSize} \u2192 ${compressed.length} chars)`);
-    }
-    debug(`Capturing observation from ${tool_name}`);
-    const mind = await getMind();
-    const observationType = classifyObservationType(tool_name, compressed);
-    const summary = generateSummary(tool_name, tool_input, effectiveOutput);
-    const content = compressed.length > MAX_OUTPUT_LENGTH ? compressed.slice(0, MAX_OUTPUT_LENGTH) + "\n... (compressed)" : compressed;
-    const metadata = extractMetadata(tool_name, tool_input);
-    if (wasCompressed) {
-      metadata.compressed = true;
-      metadata.originalSize = originalSize;
-      metadata.compressedSize = compressed.length;
-    }
-    await mind.remember({
-      type: observationType,
-      summary,
-      content,
-      tool: tool_name,
-      metadata
-    });
-    markObserved(dedupKey);
-    debug(`Stored: [${observationType}] ${summary}${wasCompressed ? " (compressed)" : ""}`);
-    writeOutput({ continue: true });
-  } catch (error) {
-    debug(`Error: ${error}`);
-    writeOutput({ continue: true });
-  }
-}
 function generateSummary(toolName, toolInput, toolOutput) {
   switch (toolName) {
     case "Read": {
-      const path = toolInput?.file_path;
+      const path = toolInput?.file_path || toolInput?.filePath;
       const fileName = path?.split("/").pop() || "file";
       const lines = toolOutput.split("\n").length;
       return `Read ${fileName} (${lines} lines)`;
     }
-    case "Edit": {
-      const path = toolInput?.file_path;
+    case "Edit":
+    case "Update": {
+      const path = toolInput?.file_path || toolInput?.filePath;
       const fileName = path?.split("/").pop() || "file";
       return `Edited ${fileName}`;
     }
     case "Write": {
-      const path = toolInput?.file_path;
+      const path = toolInput?.file_path || toolInput?.filePath;
       const fileName = path?.split("/").pop() || "file";
       return `Created ${fileName}`;
     }
@@ -810,17 +1032,23 @@ function generateSummary(toolName, toolInput, toolOutput) {
       return `${toolName} completed`;
   }
 }
-function extractMetadata(toolName, toolInput) {
-  const metadata = {};
+function extractMetadata(toolName, toolInput, platform, projectIdentityKey) {
+  const metadata = {
+    platform,
+    projectIdentityKey
+  };
   if (!toolInput) return metadata;
   switch (toolName) {
     case "Read":
     case "Edit":
     case "Write":
-      if (toolInput.file_path) {
-        metadata.files = [toolInput.file_path];
+    case "Update": {
+      const filePath = toolInput.file_path || toolInput.filePath;
+      if (filePath) {
+        metadata.files = [filePath];
       }
       break;
+    }
     case "Bash":
       if (toolInput.command) {
         metadata.command = toolInput.command.slice(0, 200);
@@ -838,6 +1066,100 @@ function extractMetadata(toolName, toolInput) {
   }
   return metadata;
 }
-main();
+async function runPostToolUseHook() {
+  try {
+    const input = await readStdin();
+    const hookInput = JSON.parse(input);
+    const platform = detectPlatform(hookInput);
+    const adapter = getDefaultAdapterRegistry().resolve(platform);
+    if (!adapter) {
+      debug(`Skipping capture: unsupported platform ${platform}`);
+      writeOutput({ continue: true });
+      return;
+    }
+    const normalized = adapter.normalizeToolObservation(hookInput);
+    if (!normalized) {
+      writeOutput({ continue: true });
+      return;
+    }
+    const pipelineResult = processPlatformEvent(normalized);
+    if (pipelineResult.skipped || !pipelineResult.projectIdentityKey) {
+      debug(`Skipping event due to pipeline result: ${pipelineResult.reason}`);
+      writeOutput({ continue: true });
+      return;
+    }
+    const { toolName, toolInput, toolResponse } = normalized.payload;
+    if (!toolName || !OBSERVED_TOOLS.has(toolName)) {
+      writeOutput({ continue: true });
+      return;
+    }
+    const dedupKey = getObservationKey(toolName, toolInput);
+    if (isDuplicate(dedupKey)) {
+      debug(`Skipping duplicate observation: ${toolName}`);
+      writeOutput({ continue: true });
+      return;
+    }
+    const rawOutput = typeof toolResponse === "string" ? toolResponse : JSON.stringify(toolResponse, null, 2);
+    const alwaysCapture = ALWAYS_CAPTURE_TOOLS.has(toolName);
+    if (!alwaysCapture && (!rawOutput || rawOutput.length < MIN_OUTPUT_LENGTH)) {
+      writeOutput({ continue: true });
+      return;
+    }
+    let effectiveOutput = rawOutput || "";
+    if (alwaysCapture && effectiveOutput.length < MIN_OUTPUT_LENGTH) {
+      const filePath = toolInput?.file_path || toolInput?.filePath || "unknown file";
+      const fileName = filePath.split("/").pop() || "file";
+      effectiveOutput = `File modified: ${fileName}
+Path: ${filePath}
+Tool: ${toolName}`;
+    }
+    if (effectiveOutput.includes("<system-reminder>") || effectiveOutput.includes("<memvid-mind-context>")) {
+      writeOutput({ continue: true });
+      return;
+    }
+    const { compressed, wasCompressed, originalSize } = compressToolOutput(
+      toolName,
+      toolInput,
+      effectiveOutput
+    );
+    if (wasCompressed) {
+      const stats = getCompressionStats(originalSize, compressed.length);
+      debug(`Compression: ${stats.savedPercent}% (${originalSize} -> ${compressed.length})`);
+    }
+    const mind = await getMind();
+    const observationType = classifyObservationType(toolName, compressed);
+    const summary = generateSummary(toolName, toolInput, effectiveOutput);
+    const content = compressed.length > MAX_OUTPUT_LENGTH ? `${compressed.slice(0, MAX_OUTPUT_LENGTH)}
+... (truncated${wasCompressed ? ", compressed" : ""})` : compressed;
+    const metadata = extractMetadata(
+      toolName,
+      toolInput,
+      platform,
+      pipelineResult.projectIdentityKey
+    );
+    if (wasCompressed) {
+      metadata.compressed = true;
+      metadata.originalSize = originalSize;
+      metadata.compressedSize = compressed.length;
+    }
+    await mind.remember({
+      type: observationType,
+      summary,
+      content,
+      tool: toolName,
+      metadata
+    });
+    markObserved(dedupKey);
+    writeOutput({ continue: true });
+  } catch (error) {
+    debug(`Error: ${error}`);
+    writeOutput({ continue: true });
+  }
+}
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  void runPostToolUseHook();
+}
+
+export { runPostToolUseHook };
 //# sourceMappingURL=post-tool-use.js.map
 //# sourceMappingURL=post-tool-use.js.map

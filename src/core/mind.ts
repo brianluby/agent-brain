@@ -24,6 +24,8 @@ import {
 } from "../types.js";
 import { generateId, estimateTokens } from "../utils/helpers.js";
 import { withMemvidLock } from "../utils/memvid-lock.js";
+import { resolveMemoryPathPolicy } from "../platforms/path-policy.js";
+import { detectPlatformFromEnv } from "../platforms/platform-detector.js";
 
 /**
  * Prune old backup files, keeping only the most recent N
@@ -91,12 +93,14 @@ async function loadSDK(): Promise<void> {
 export class Mind {
   private memvid: Memvid;
   private config: MindConfig;
+  private memoryPath: string;
   private sessionId: string;
   private initialized = false;
 
-  private constructor(memvid: Memvid, config: MindConfig) {
+  private constructor(memvid: Memvid, config: MindConfig, memoryPath: string) {
     this.memvid = memvid;
     this.config = config;
+    this.memoryPath = memoryPath;
     this.sessionId = generateId();
   }
 
@@ -111,7 +115,16 @@ export class Mind {
 
     // Resolve path relative to project dir (use CLAUDE_PROJECT_DIR if available)
     const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-    const memoryPath = resolve(projectDir, config.memoryPath);
+    const platform = detectPlatformFromEnv();
+    const optIn = process.env.MEMVID_PLATFORM_PATH_OPT_IN === "1";
+    const pathPolicy = resolveMemoryPathPolicy({
+      projectDir,
+      platform,
+      legacyRelativePath: config.memoryPath,
+      platformRelativePath: process.env.MEMVID_PLATFORM_MEMORY_PATH,
+      platformOptIn: optIn,
+    });
+    const memoryPath = pathPolicy.memoryPath;
     const memoryDir = dirname(memoryPath);
 
     // Ensure directory exists
@@ -167,7 +180,7 @@ export class Mind {
       }
     });
 
-    const mind = new Mind(memvid, config);
+    const mind = new Mind(memvid, config, memoryPath);
     mind.initialized = true;
 
     // Prune old backups (keep only most recent 3)
@@ -396,7 +409,7 @@ export class Mind {
    * Get the memory file path
    */
   getMemoryPath(): string {
-    return resolve(process.cwd(), this.config.memoryPath);
+    return this.memoryPath;
   }
 
   /**

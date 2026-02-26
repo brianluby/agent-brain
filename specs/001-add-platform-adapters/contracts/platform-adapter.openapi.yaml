@@ -1,0 +1,484 @@
+openapi: 3.1.0
+info:
+  title: Platform Adapter Memory Contract
+  version: 1.0.0
+  description: |
+    Internal contract for platform adapters (Claude, OpenCode, future adapters)
+    to interact with the shared memory engine.
+servers:
+  - url: https://internal.local
+    description: Internal runtime surface
+tags:
+  - name: AdapterLifecycle
+  - name: MemoryQuery
+paths:
+  /v1/adapters/{platform}/sessions/start:
+    post:
+      tags: [AdapterLifecycle]
+      summary: Start adapter session and return injectable context
+      operationId: adapterSessionStart
+      parameters:
+        - $ref: '#/components/parameters/Platform'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionStartRequest'
+      responses:
+        '200':
+          description: Session accepted with context payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionStartResponse'
+        '202':
+          description: Session continues with capture disabled (unsupported platform or contract mismatch)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaptureDisabledResponse'
+
+  /v1/adapters/{platform}/events/tool-observation:
+    post:
+      tags: [AdapterLifecycle]
+      summary: Ingest a normalized tool observation event
+      operationId: adapterToolObservation
+      parameters:
+        - $ref: '#/components/parameters/Platform'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ToolObservationRequest'
+      responses:
+        '200':
+          description: Observation persisted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventAcceptedResponse'
+        '202':
+          description: Event skipped in fail-open mode; diagnostics emitted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventSkippedResponse'
+
+  /v1/adapters/{platform}/sessions/{sessionId}/stop:
+    post:
+      tags: [AdapterLifecycle]
+      summary: Stop session and persist summary
+      operationId: adapterSessionStop
+      parameters:
+        - $ref: '#/components/parameters/Platform'
+        - $ref: '#/components/parameters/SessionId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionStopRequest'
+      responses:
+        '200':
+          description: Session stop processed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionStopResponse'
+        '202':
+          description: Session stop accepted in fail-open mode with diagnostics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventSkippedResponse'
+
+  /v1/adapters/{platform}/contract/validate:
+    post:
+      tags: [AdapterLifecycle]
+      summary: Validate adapter contract version compatibility
+      operationId: validateAdapterContract
+      parameters:
+        - $ref: '#/components/parameters/Platform'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContractValidationRequest'
+      responses:
+        '200':
+          description: Contract accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractValidationResponse'
+        '202':
+          description: Incompatible major version; capture disabled fail-open
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaptureDisabledResponse'
+
+  /v1/memory/search:
+    post:
+      tags: [MemoryQuery]
+      summary: Search memory for relevant observations
+      operationId: memorySearch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchRequest'
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResponse'
+
+  /v1/memory/ask:
+    post:
+      tags: [MemoryQuery]
+      summary: Ask memory a natural language question
+      operationId: memoryAsk
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AskRequest'
+      responses:
+        '200':
+          description: Question answer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AskResponse'
+
+  /v1/memory/recent:
+    get:
+      tags: [MemoryQuery]
+      summary: Fetch recent memory timeline for a project
+      operationId: memoryRecent
+      parameters:
+        - name: projectIdentityKey
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: Recent observations
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecentResponse'
+
+  /v1/memory/stats:
+    get:
+      tags: [MemoryQuery]
+      summary: Fetch memory store statistics for a project
+      operationId: memoryStats
+      parameters:
+        - name: projectIdentityKey
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Memory statistics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatsResponse'
+
+components:
+  parameters:
+    Platform:
+      name: platform
+      in: path
+      required: true
+      description: Registered platform adapter key
+      schema:
+        type: string
+        pattern: '^[a-z][a-z0-9-]*$'
+      examples:
+        claude:
+          value: claude
+        opencode:
+          value: opencode
+    SessionId:
+      name: sessionId
+      in: path
+      required: true
+      schema:
+        type: string
+
+  schemas:
+    SessionStartRequest:
+      type: object
+      required: [sessionId, contractVersion, projectContext]
+      properties:
+        sessionId:
+          type: string
+        contractVersion:
+          type: string
+          description: Adapter contract version (SemVer)
+        projectContext:
+          $ref: '#/components/schemas/ProjectContext'
+
+    SessionStartResponse:
+      type: object
+      required: [continue, projectIdentityKey, additionalContext]
+      properties:
+        continue:
+          type: boolean
+          const: true
+        projectIdentityKey:
+          type: string
+        additionalContext:
+          type: string
+
+    ToolObservationRequest:
+      type: object
+      required: [eventId, sessionId, timestamp, toolName, payload]
+      properties:
+        eventId:
+          type: string
+        sessionId:
+          type: string
+        timestamp:
+          type: integer
+          format: int64
+        toolName:
+          type: string
+        payload:
+          type: object
+          additionalProperties: true
+        projectContext:
+          $ref: '#/components/schemas/ProjectContext'
+
+    SessionStopRequest:
+      type: object
+      required: [timestamp]
+      properties:
+        timestamp:
+          type: integer
+          format: int64
+        transcriptPath:
+          type: string
+
+    SessionStopResponse:
+      type: object
+      required: [continue, summaryStored]
+      properties:
+        continue:
+          type: boolean
+          const: true
+        summaryStored:
+          type: boolean
+        sessionSummaryId:
+          type: string
+
+    ContractValidationRequest:
+      type: object
+      required: [contractVersion]
+      properties:
+        contractVersion:
+          type: string
+
+    ContractValidationResponse:
+      type: object
+      required: [compatible, supportedMajor]
+      properties:
+        compatible:
+          type: boolean
+          const: true
+        supportedMajor:
+          type: integer
+
+    CaptureDisabledResponse:
+      type: object
+      required: [continue, captureEnabled, diagnostic]
+      properties:
+        continue:
+          type: boolean
+          const: true
+        captureEnabled:
+          type: boolean
+          const: false
+        diagnostic:
+          $ref: '#/components/schemas/DiagnosticRecord'
+
+    EventAcceptedResponse:
+      type: object
+      required: [accepted, observationId]
+      properties:
+        accepted:
+          type: boolean
+          const: true
+        observationId:
+          type: string
+
+    EventSkippedResponse:
+      type: object
+      required: [accepted, skipped, reason, diagnostic]
+      properties:
+        accepted:
+          type: boolean
+          const: true
+        skipped:
+          type: boolean
+          const: true
+        reason:
+          type: string
+        diagnostic:
+          $ref: '#/components/schemas/DiagnosticRecord'
+
+    SearchRequest:
+      type: object
+      required: [projectIdentityKey, query]
+      properties:
+        projectIdentityKey:
+          type: string
+        query:
+          type: string
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 10
+
+    SearchResponse:
+      type: object
+      required: [results]
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/MemorySearchResult'
+
+    AskRequest:
+      type: object
+      required: [projectIdentityKey, question]
+      properties:
+        projectIdentityKey:
+          type: string
+        question:
+          type: string
+
+    AskResponse:
+      type: object
+      required: [answer]
+      properties:
+        answer:
+          type: string
+
+    RecentResponse:
+      type: object
+      required: [observations, tokenCount]
+      properties:
+        observations:
+          type: array
+          items:
+            $ref: '#/components/schemas/Observation'
+        tokenCount:
+          type: integer
+
+    StatsResponse:
+      type: object
+      required: [totalObservations, totalSessions, oldestMemory, newestMemory, fileSize]
+      properties:
+        totalObservations:
+          type: integer
+        totalSessions:
+          type: integer
+        oldestMemory:
+          type: integer
+          format: int64
+        newestMemory:
+          type: integer
+          format: int64
+        fileSize:
+          type: integer
+
+    ProjectContext:
+      type: object
+      properties:
+        platformProjectId:
+          type: string
+        canonicalPath:
+          type: string
+        cwd:
+          type: string
+      additionalProperties: false
+
+    MemorySearchResult:
+      type: object
+      required: [observation, score, snippet]
+      properties:
+        observation:
+          $ref: '#/components/schemas/Observation'
+        score:
+          type: number
+        snippet:
+          type: string
+
+    Observation:
+      type: object
+      required: [id, timestamp, type, summary, content]
+      properties:
+        id:
+          type: string
+        timestamp:
+          type: integer
+          format: int64
+        type:
+          type: string
+        tool:
+          type: string
+        summary:
+          type: string
+        content:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: true
+
+    DiagnosticRecord:
+      type: object
+      required: [timestamp, platform, errorType, severity, redacted, retentionDays]
+      properties:
+        timestamp:
+          type: integer
+          format: int64
+        platform:
+          type: string
+        errorType:
+          type: string
+        fieldNames:
+          type: array
+          items:
+            type: string
+        severity:
+          type: string
+          enum: [warning, error]
+        redacted:
+          type: boolean
+          const: true
+        retentionDays:
+          type: integer
+          const: 30

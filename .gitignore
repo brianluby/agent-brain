@@ -3,6 +3,7 @@ node_modules/
 
 # Build output (dist is included for GitHub plugin installation)
 # dist/
+build/
 
 # IDE
 .idea/

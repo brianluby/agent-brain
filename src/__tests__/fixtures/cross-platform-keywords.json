@@ -1,0 +1,44 @@
+{
+  "checks": [
+    {
+      "id": "auth-refresh-token",
+      "keywords": ["refresh token", "jwt", "rotation"]
+    },
+    {
+      "id": "build-pipeline",
+      "keywords": ["ci", "pipeline", "lint"]
+    },
+    {
+      "id": "memory-locking",
+      "keywords": ["lock", "concurrent", "serialize"]
+    },
+    {
+      "id": "session-summary",
+      "keywords": ["summary", "session", "observations"]
+    },
+    {
+      "id": "diagnostics-redaction",
+      "keywords": ["diagnostic", "redacted", "metadata"]
+    },
+    {
+      "id": "path-policy",
+      "keywords": ["legacy", "path", "opt-in"]
+    },
+    {
+      "id": "contract-versioning",
+      "keywords": ["semver", "major", "contract"]
+    },
+    {
+      "id": "platform-continuity",
+      "keywords": ["cross-platform", "continuity", "project"]
+    },
+    {
+      "id": "open-code-capture",
+      "keywords": ["opencode", "capture", "events"]
+    },
+    {
+      "id": "claude-baseline",
+      "keywords": ["claude", "baseline", "regression"]
+    }
+  ]
+}

@@ -13,9 +13,15 @@
 import { getMind } from "../core/mind.js";
 import { readStdin, writeOutput, debug } from "../utils/helpers.js";
 import type { HookInput, HookOutput } from "../types.js";
+import {
+  detectPlatform,
+  getDefaultAdapterRegistry,
+  processPlatformEvent,
+} from "../platforms/index.js";
 import { readFile, access } from "node:fs/promises";
 import { constants } from "node:fs";
 import { execSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 // Minimum observations to generate a session summary
 const MIN_OBSERVATIONS_FOR_SUMMARY = 3;
@@ -159,13 +165,29 @@ async function captureFileChanges(mind: Awaited<ReturnType<typeof getMind>>) {
   }
 }
 
-async function main() {
+export async function runStopHook(): Promise<void> {
   try {
     // Read hook input from stdin
     const input = await readStdin();
     const hookInput: HookInput = JSON.parse(input);
 
     debug(`Session stopping: ${hookInput.session_id}`);
+
+    const platform = detectPlatform(hookInput);
+    const adapter = getDefaultAdapterRegistry().resolve(platform);
+    if (!adapter) {
+      debug(`Unsupported platform at stop hook: ${platform}`);
+      writeOutput({ continue: true });
+      return;
+    }
+
+    const normalizedStop = adapter.normalizeSessionStop(hookInput);
+    const pipelineResult = processPlatformEvent(normalizedStop);
+    if (pipelineResult.skipped) {
+      debug(`Skipping stop processing: ${pipelineResult.reason}`);
+      writeOutput({ continue: true });
+      return;
+    }
 
     // Initialize mind
     const mind = await getMind();
@@ -317,4 +339,6 @@ function generateSessionSummary(
   };
 }
 
-main();
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  void runStopHook();
+}
