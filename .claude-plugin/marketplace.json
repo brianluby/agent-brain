@@ -1,9 +1,9 @@
 {
-  "name": "memvid",
-  "description": "Official Memvid plugins for Claude Code",
+  "name": "agent-brain",
+  "description": "Official Agent Brain plugins for Claude Code",
   "owner": {
-    "name": "Memvid",
-    "url": "https://memvid.com"
+    "name": "Agent Brain",
+    "url": "https://github.com/brianluby/agent-brain"
   },
   "plugins": [
     {
