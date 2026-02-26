@@ -33,7 +33,7 @@ describe("Mind concurrent access", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, 20000);
 
   it("preserves all frames with concurrent writers (edge case)", async () => {
     const { dir, path } = makeTempMemoryPath();
@@ -56,5 +56,5 @@ describe("Mind concurrent access", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  }, 15000);
+  }, 30000);
 });

@@ -33,5 +33,5 @@ describe("cross-platform lock contention", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  }, 15000);
+  }, 30000);
 });

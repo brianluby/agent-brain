@@ -1,3 +1,14 @@
+import { tmpdir } from "node:os";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, resolve } from "node:path";
+import lockfile from "proper-lockfile";
 import { generateId } from "../utils/helpers.js";
 import {
   DIAGNOSTIC_RETENTION_DAYS,
@@ -6,6 +17,8 @@ import {
 } from "./diagnostics.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const DIAGNOSTIC_FILE_NAME = "platform-diagnostics.json";
+const TEST_DIAGNOSTIC_FILE_NAME = `memvid-platform-diagnostics-${process.pid}.json`;
 
 export interface CreateDiagnosticInput {
   platform: string;
@@ -22,12 +35,162 @@ function sanitizeFieldNames(fieldNames: string[] | undefined): string[] | undefi
   return [...new Set(fieldNames)].slice(0, 20);
 }
 
-// TODO: FR-012/FR-016 — This module creates diagnostic records in memory but does
-// not persist them to disk. Implement a DiagnosticPersistence layer that appends
-// records to a JSON file and prunes entries older than DIAGNOSTIC_RETENTION_DAYS.
+function resolveDiagnosticStorePath(): string {
+  const explicitPath = process.env.MEMVID_DIAGNOSTIC_PATH?.trim();
+  const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+
+  if (explicitPath) {
+    return resolve(projectDir, explicitPath);
+  }
+
+  if (process.env.VITEST) {
+    return resolve(tmpdir(), TEST_DIAGNOSTIC_FILE_NAME);
+  }
+
+  return resolve(projectDir, ".claude", DIAGNOSTIC_FILE_NAME);
+}
+
+function isDiagnosticRecord(value: unknown): value is AdapterDiagnostic {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.diagnosticId === "string" &&
+    typeof record.timestamp === "number" &&
+    typeof record.platform === "string" &&
+    typeof record.errorType === "string" &&
+    (record.fieldNames === undefined ||
+      (Array.isArray(record.fieldNames)
+        && record.fieldNames.every((name) => typeof name === "string"))) &&
+    (record.severity === "warning" || record.severity === "error") &&
+    record.redacted === true &&
+    typeof record.retentionDays === "number" &&
+    typeof record.expiresAt === "number"
+  );
+}
+
+function pruneExpired(records: AdapterDiagnostic[], now = Date.now()): AdapterDiagnostic[] {
+  return records.filter((record) => record.expiresAt > now);
+}
+
+class DiagnosticPersistence {
+  readonly filePath: string;
+  private records: AdapterDiagnostic[];
+
+  constructor(filePath: string) {
+    this.filePath = filePath;
+    this.records = pruneExpired(this.loadFromDisk());
+  }
+
+  append(record: AdapterDiagnostic, now = Date.now()): void {
+    this.withFileLock(() => {
+      const latest = this.loadFromDisk();
+      const next = pruneExpired([...latest, record], now);
+      this.persist(next);
+      this.records = next;
+    });
+  }
+
+  list(now = Date.now()): AdapterDiagnostic[] {
+    return this.withFileLock(() => {
+      const latest = this.loadFromDisk();
+      const pruned = pruneExpired(latest, now);
+      if (pruned.length !== latest.length) {
+        this.persist(pruned);
+      }
+      this.records = pruned;
+      return [...pruned];
+    });
+  }
+
+  private loadFromDisk(): AdapterDiagnostic[] {
+    if (!existsSync(this.filePath)) {
+      return [];
+    }
+
+    try {
+      const raw = readFileSync(this.filePath, "utf-8").trim();
+      if (!raw) {
+        return [];
+      }
+
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) {
+        return [];
+      }
+
+      return parsed.filter(isDiagnosticRecord);
+    } catch {
+      return [];
+    }
+  }
+
+  private withFileLock<T>(fn: () => T): T {
+    mkdirSync(dirname(this.filePath), { recursive: true });
+    const release = lockfile.lockSync(this.filePath, { realpath: false });
+    try {
+      return fn();
+    } finally {
+      release();
+    }
+  }
+
+  private persist(records: AdapterDiagnostic[]): void {
+    mkdirSync(dirname(this.filePath), { recursive: true });
+    const tmpPath = `${this.filePath}.tmp-${process.pid}-${Date.now()}`;
+    try {
+      writeFileSync(tmpPath, `${JSON.stringify(records, null, 2)}\n`, "utf-8");
+      try {
+        renameSync(tmpPath, this.filePath);
+      } catch {
+        rmSync(this.filePath, { force: true });
+        renameSync(tmpPath, this.filePath);
+      }
+    } finally {
+      rmSync(tmpPath, { force: true });
+    }
+  }
+}
+
+let persistence: DiagnosticPersistence | null = null;
+let persistenceFilePath: string | null = null;
+let warnedPathChange = false;
+
+function getDiagnosticPersistence(): DiagnosticPersistence {
+  const resolvedPath = resolveDiagnosticStorePath();
+
+  if (!persistence) {
+    persistence = new DiagnosticPersistence(resolvedPath);
+    persistenceFilePath = resolvedPath;
+    warnedPathChange = false;
+    return persistence;
+  }
+
+  if (persistenceFilePath && persistenceFilePath !== resolvedPath && !warnedPathChange) {
+    warnedPathChange = true;
+    console.error(
+      `[memvid-mind] Diagnostic store path changed from "${persistenceFilePath}" to "${resolvedPath}" after initialization; continuing with the original path.`
+    );
+  }
+
+  return persistence;
+}
+
+export function resetDiagnosticPersistenceForTests(): void {
+  persistence = null;
+  persistenceFilePath = null;
+  warnedPathChange = false;
+}
+
+export function listPersistedDiagnostics(now = Date.now()): AdapterDiagnostic[] {
+  return getDiagnosticPersistence().list(now);
+}
+
 export function createRedactedDiagnostic(input: CreateDiagnosticInput): AdapterDiagnostic {
   const timestamp = input.now ?? Date.now();
-  return {
+  const diagnostic: AdapterDiagnostic = {
     diagnosticId: generateId(),
     timestamp,
     platform: input.platform,
@@ -38,4 +201,12 @@ export function createRedactedDiagnostic(input: CreateDiagnosticInput): AdapterD
     retentionDays: DIAGNOSTIC_RETENTION_DAYS,
     expiresAt: timestamp + (DIAGNOSTIC_RETENTION_DAYS * DAY_MS),
   };
+
+  try {
+    getDiagnosticPersistence().append(diagnostic);
+  } catch {
+    // Fail-open: never block event processing on diagnostic persistence failures.
+  }
+
+  return diagnostic;
 }
