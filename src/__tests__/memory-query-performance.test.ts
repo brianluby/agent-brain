@@ -19,17 +19,25 @@ async function seedMemory(memoryPath: string, entryCount: number): Promise<void>
   const { create } = await import("@memvid/sdk");
   const memvid = await create(memoryPath, "basic");
 
-  for (let i = 0; i < entryCount; i++) {
-    await memvid.put({
-      title: `Perf entry ${i}`,
-      label: "discovery",
-      text: `entry-${i} token-${i % 20} platform-${i % 2 === 0 ? "claude" : "opencode"}`,
-      metadata: {
-        timestamp: Date.now(),
-        sessionId: `seed-session-${Math.floor(i / 50)}`,
-      },
-      tags: ["perf"],
-    });
+  try {
+    for (let i = 0; i < entryCount; i++) {
+      await memvid.put({
+        title: `Perf entry ${i}`,
+        label: "discovery",
+        text: `entry-${i} token-${i % 20} platform-${i % 2 === 0 ? "claude" : "opencode"}`,
+        metadata: {
+          timestamp: Date.now(),
+          sessionId: `seed-session-${Math.floor(i / 50)}`,
+        },
+        tags: ["perf"],
+      });
+    }
+  } finally {
+    if (typeof memvid.close === "function") {
+      await memvid.close();
+    } else if (typeof memvid.destroy === "function") {
+      await memvid.destroy();
+    }
   }
 }
 

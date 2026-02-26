@@ -131,17 +131,33 @@ class DiagnosticPersistence {
 }
 
 let persistence: DiagnosticPersistence | null = null;
+let persistenceFilePath: string | null = null;
+let warnedPathChange = false;
 
 function getDiagnosticPersistence(): DiagnosticPersistence {
-  const filePath = resolveDiagnosticStorePath();
-  if (!persistence || persistence.filePath !== filePath) {
-    persistence = new DiagnosticPersistence(filePath);
+  const resolvedPath = resolveDiagnosticStorePath();
+
+  if (!persistence) {
+    persistence = new DiagnosticPersistence(resolvedPath);
+    persistenceFilePath = resolvedPath;
+    warnedPathChange = false;
+    return persistence;
   }
+
+  if (persistenceFilePath && persistenceFilePath !== resolvedPath && !warnedPathChange) {
+    warnedPathChange = true;
+    console.error(
+      `[memvid-mind] Diagnostic store path changed from "${persistenceFilePath}" to "${resolvedPath}" after initialization; continuing with the original path.`
+    );
+  }
+
   return persistence;
 }
 
 export function resetDiagnosticPersistenceForTests(): void {
   persistence = null;
+  persistenceFilePath = null;
+  warnedPathChange = false;
 }
 
 export function listPersistedDiagnostics(now = Date.now()): AdapterDiagnostic[] {

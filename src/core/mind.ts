@@ -354,7 +354,9 @@ export class Mind {
       return 0;
     }
 
-    // SDK can return seconds in timeline metadata.
+    // normalizeTimestampMs heuristic: 4102444800 is 2100-01-01 in epoch seconds.
+    // Values below 4102444800 are treated as seconds (SDK timeline fields can be
+    // second-based), so we multiply by 1000 to normalize to milliseconds.
     if (value < 4102444800) {
       return Math.round(value * 1000);
     }
@@ -439,20 +441,69 @@ export class Mind {
   private extractObservationType(frame: any): ObservationType | null {
     if (Array.isArray(frame?.labels)) {
       for (const value of frame.labels) {
-        if (typeof value === "string" && OBSERVATION_TYPE_SET.has(value as ObservationType)) {
-          return value as ObservationType;
+        if (typeof value === "string") {
+          const normalized = value.toLowerCase();
+          if (OBSERVATION_TYPE_SET.has(normalized as ObservationType)) {
+            return normalized as ObservationType;
+          }
         }
       }
     }
 
     const label = typeof frame?.label === "string" ? frame.label : undefined;
-    if (label && OBSERVATION_TYPE_SET.has(label as ObservationType)) {
-      return label as ObservationType;
+    if (label) {
+      const normalized = label.toLowerCase();
+      if (OBSERVATION_TYPE_SET.has(normalized as ObservationType)) {
+        return normalized as ObservationType;
+      }
     }
 
     const metadataType = frame?.metadata?.type;
-    if (typeof metadataType === "string" && OBSERVATION_TYPE_SET.has(metadataType as ObservationType)) {
-      return metadataType as ObservationType;
+    if (typeof metadataType === "string") {
+      const normalized = metadataType.toLowerCase();
+      if (OBSERVATION_TYPE_SET.has(normalized as ObservationType)) {
+        return normalized as ObservationType;
+      }
+    }
+
+    return null;
+  }
+
+  private extractPreviewFieldValues(preview: unknown, field: "tags" | "labels"): string[] {
+    if (typeof preview !== "string" || preview.length === 0) {
+      return [];
+    }
+
+    const match = new RegExp(`(?:^|\\n)${field}:\\s*([^\\n]*)`, "i").exec(preview);
+    if (!match?.[1]) {
+      return [];
+    }
+
+    return match[1]
+      .split(/[^a-z0-9:_-]+/i)
+      .map((value) => value.trim())
+      .filter(Boolean);
+  }
+
+  private extractObservationTypeFromPreview(preview: unknown): ObservationType | null {
+    const labels = this.extractPreviewFieldValues(preview, "labels");
+    const fromLabels = this.extractObservationType({ labels });
+    if (fromLabels) {
+      return fromLabels;
+    }
+
+    if (typeof preview !== "string" || preview.length === 0) {
+      return null;
+    }
+
+    const titleMatch = /(?:^|\n)title:\s*\[([^\]]+)\]/i.exec(preview);
+    if (!titleMatch?.[1]) {
+      return null;
+    }
+
+    const normalized = titleMatch[1].trim().toLowerCase();
+    if (OBSERVATION_TYPE_SET.has(normalized as ObservationType)) {
+      return normalized as ObservationType;
     }
 
     return null;
@@ -673,11 +724,10 @@ export class Mind {
       let newestMemory = 0;
 
       for (const frame of frames) {
-        const frameInfo = await this.memvid.getFrameInfo(frame.frame_id);
-        const labels = Array.isArray(frameInfo?.labels) ? frameInfo.labels : [];
-        const tags = Array.isArray(frameInfo?.tags) ? frameInfo.tags : [];
+        const labels = this.extractPreviewFieldValues(frame.preview, "labels");
+        const tags = this.extractPreviewFieldValues(frame.preview, "tags");
 
-        const timestamp = this.normalizeTimestampMs(frameInfo?.timestamp || frame.timestamp || 0);
+        const timestamp = this.normalizeTimestampMs(frame.timestamp || 0);
         if (timestamp > 0) {
           if (oldestMemory === 0 || timestamp < oldestMemory) {
             oldestMemory = timestamp;
@@ -691,7 +741,6 @@ export class Mind {
           ...frame,
           labels,
           tags,
-          metadata: frameInfo?.metadata,
         });
         if (sessionId) {
           sessionIds.add(sessionId);
@@ -699,13 +748,26 @@ export class Mind {
 
         const observationType = this.extractObservationType({
           ...frame,
-          label: frameInfo?.labels?.[0],
+          label: labels[0],
           labels,
           tags,
-          metadata: frameInfo?.metadata,
-        });
+        }) || this.extractObservationTypeFromPreview(frame.preview);
         if (observationType) {
           topTypes[observationType] += 1;
+        }
+      }
+
+      const summarySearch = await this.memvid.find("Session Summary", {
+        k: 50,
+        mode: "lex",
+      });
+      const summaryHits = Array.isArray(summarySearch?.hits)
+        ? summarySearch.hits
+        : [];
+      for (const hit of summaryHits) {
+        const summary = this.extractSessionSummaryFromSearchHit(hit);
+        if (summary) {
+          sessionIds.add(summary.id);
         }
       }
 
