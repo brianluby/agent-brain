@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 import { constants, readdirSync, unlinkSync, existsSync } from 'fs';
-import { resolve, dirname } from 'path';
+import { dirname, resolve } from 'path';
 import { access, readFile, mkdir, open } from 'fs/promises';
 import { randomBytes } from 'crypto';
 import lockfile from 'proper-lockfile';
 import { execSync } from 'child_process';
+import { fileURLToPath } from 'url';
 
 // src/types.ts
 var DEFAULT_CONFIG = {
@@ -23,9 +24,9 @@ function estimateTokens(text) {
 }
 async function readStdin() {
   const chunks = [];
-  return new Promise((resolve2, reject) => {
+  return new Promise((resolve4, reject) => {
     process.stdin.on("data", (chunk) => chunks.push(chunk));
-    process.stdin.on("end", () => resolve2(Buffer.concat(chunks).toString("utf8")));
+    process.stdin.on("end", () => resolve4(Buffer.concat(chunks).toString("utf8")));
     process.stdin.on("error", reject);
   });
 }
@@ -56,6 +57,46 @@ async function withMemvidLock(lockPath, fn) {
   } finally {
     await release();
   }
+}
+function defaultPlatformRelativePath(platform) {
+  return `.claude/mind-${platform}.mv2`;
+}
+function resolveMemoryPathPolicy(input) {
+  if (input.platformOptIn) {
+    const relative = input.platformRelativePath || defaultPlatformRelativePath(input.platform);
+    return {
+      mode: "platform_opt_in",
+      memoryPath: resolve(input.projectDir, relative)
+    };
+  }
+  return {
+    mode: "legacy_first",
+    memoryPath: resolve(input.projectDir, input.legacyRelativePath)
+  };
+}
+
+// src/platforms/platform-detector.ts
+function normalizePlatform(value) {
+  if (!value) return void 0;
+  const normalized = value.trim().toLowerCase();
+  return normalized.length > 0 ? normalized : void 0;
+}
+function detectPlatformFromEnv() {
+  const explicitFromEnv = normalizePlatform(process.env.MEMVID_PLATFORM);
+  if (explicitFromEnv) {
+    return explicitFromEnv;
+  }
+  if (process.env.OPENCODE === "1" || process.env.OPENCODE_SESSION === "1") {
+    return "opencode";
+  }
+  return "claude";
+}
+function detectPlatform(input) {
+  const explicitFromHook = normalizePlatform(input.platform);
+  if (explicitFromHook) {
+    return explicitFromHook;
+  }
+  return detectPlatformFromEnv();
 }
 
 // src/core/mind.ts
@@ -93,11 +134,13 @@ async function loadSDK() {
 var Mind = class _Mind {
   memvid;
   config;
+  memoryPath;
   sessionId;
   initialized = false;
-  constructor(memvid, config) {
+  constructor(memvid, config, memoryPath) {
     this.memvid = memvid;
     this.config = config;
+    this.memoryPath = memoryPath;
     this.sessionId = generateId();
   }
   /**
@@ -107,7 +150,16 @@ var Mind = class _Mind {
     await loadSDK();
     const config = { ...DEFAULT_CONFIG, ...configOverrides };
     const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-    const memoryPath = resolve(projectDir, config.memoryPath);
+    const platform = detectPlatformFromEnv();
+    const optIn = process.env.MEMVID_PLATFORM_PATH_OPT_IN === "1";
+    const pathPolicy = resolveMemoryPathPolicy({
+      projectDir,
+      platform,
+      legacyRelativePath: config.memoryPath,
+      platformRelativePath: process.env.MEMVID_PLATFORM_MEMORY_PATH,
+      platformOptIn: optIn
+    });
+    const memoryPath = pathPolicy.memoryPath;
     const memoryDir = dirname(memoryPath);
     await mkdir(memoryDir, { recursive: true });
     let memvid;
@@ -152,7 +204,7 @@ var Mind = class _Mind {
         throw openError;
       }
     });
-    const mind = new _Mind(memvid, config);
+    const mind = new _Mind(memvid, config, memoryPath);
     mind.initialized = true;
     pruneBackups(memoryPath, 3);
     if (config.debug) {
@@ -339,7 +391,7 @@ var Mind = class _Mind {
    * Get the memory file path
    */
   getMemoryPath() {
-    return resolve(process.cwd(), this.config.memoryPath);
+    return this.memoryPath;
   }
   /**
    * Check if initialized
@@ -354,6 +406,231 @@ async function getMind(config) {
     mindInstance = await Mind.open(config);
   }
   return mindInstance;
+}
+
+// src/platforms/registry.ts
+var AdapterRegistry = class {
+  adapters = /* @__PURE__ */ new Map();
+  register(adapter) {
+    this.adapters.set(adapter.platform, adapter);
+  }
+  resolve(platform) {
+    return this.adapters.get(platform) || null;
+  }
+  listPlatforms() {
+    return [...this.adapters.keys()].sort();
+  }
+};
+
+// src/platforms/events.ts
+function createEventId() {
+  return generateId();
+}
+
+// src/platforms/adapters/create-adapter.ts
+var CONTRACT_VERSION = "1.0.0";
+function createAdapter(platform) {
+  function projectContext(input) {
+    return {
+      platformProjectId: input.project_id,
+      canonicalPath: input.cwd,
+      cwd: input.cwd
+    };
+  }
+  return {
+    platform,
+    contractVersion: CONTRACT_VERSION,
+    normalizeSessionStart(input) {
+      return {
+        eventId: createEventId(),
+        eventType: "session_start",
+        platform,
+        contractVersion: input.contract_version || CONTRACT_VERSION,
+        sessionId: input.session_id,
+        timestamp: Date.now(),
+        projectContext: projectContext(input),
+        payload: {
+          hookEventName: input.hook_event_name,
+          permissionMode: input.permission_mode,
+          transcriptPath: input.transcript_path
+        }
+      };
+    },
+    normalizeToolObservation(input) {
+      if (!input.tool_name) return null;
+      return {
+        eventId: createEventId(),
+        eventType: "tool_observation",
+        platform,
+        contractVersion: input.contract_version || CONTRACT_VERSION,
+        sessionId: input.session_id,
+        timestamp: Date.now(),
+        projectContext: projectContext(input),
+        payload: {
+          toolName: input.tool_name,
+          toolInput: input.tool_input,
+          toolResponse: input.tool_response
+        }
+      };
+    },
+    normalizeSessionStop(input) {
+      return {
+        eventId: createEventId(),
+        eventType: "session_stop",
+        platform,
+        contractVersion: input.contract_version || CONTRACT_VERSION,
+        sessionId: input.session_id,
+        timestamp: Date.now(),
+        projectContext: projectContext(input),
+        payload: {
+          transcriptPath: input.transcript_path
+        }
+      };
+    }
+  };
+}
+
+// src/platforms/adapters/claude.ts
+var claudeAdapter = createAdapter("claude");
+
+// src/platforms/adapters/opencode.ts
+var opencodeAdapter = createAdapter("opencode");
+
+// src/platforms/contract.ts
+var SUPPORTED_ADAPTER_CONTRACT_MAJOR = 1;
+var SEMVER_PATTERN = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/;
+function parseContractMajor(version) {
+  const match = SEMVER_PATTERN.exec(version.trim());
+  if (!match) {
+    return null;
+  }
+  return Number(match[1]);
+}
+function validateAdapterContractVersion(version, supportedMajor = SUPPORTED_ADAPTER_CONTRACT_MAJOR) {
+  const adapterMajor = parseContractMajor(version);
+  if (adapterMajor === null) {
+    return {
+      compatible: false,
+      supportedMajor,
+      adapterMajor: null,
+      reason: "invalid_contract_version"
+    };
+  }
+  if (adapterMajor !== supportedMajor) {
+    return {
+      compatible: false,
+      supportedMajor,
+      adapterMajor,
+      reason: "incompatible_contract_major"
+    };
+  }
+  return {
+    compatible: true,
+    supportedMajor,
+    adapterMajor
+  };
+}
+
+// src/platforms/diagnostics.ts
+var DIAGNOSTIC_RETENTION_DAYS = 30;
+
+// src/platforms/diagnostic-store.ts
+var DAY_MS = 24 * 60 * 60 * 1e3;
+function sanitizeFieldNames(fieldNames) {
+  if (!fieldNames || fieldNames.length === 0) {
+    return void 0;
+  }
+  return [...new Set(fieldNames)].slice(0, 20);
+}
+function createRedactedDiagnostic(input) {
+  const timestamp = input.now ?? Date.now();
+  return {
+    diagnosticId: generateId(),
+    timestamp,
+    platform: input.platform,
+    errorType: input.errorType,
+    fieldNames: sanitizeFieldNames(input.fieldNames),
+    severity: input.severity ?? "warning",
+    redacted: true,
+    retentionDays: DIAGNOSTIC_RETENTION_DAYS,
+    expiresAt: timestamp + DIAGNOSTIC_RETENTION_DAYS * DAY_MS
+  };
+}
+function resolveCanonicalProjectPath(context) {
+  if (context.canonicalPath) {
+    return resolve(context.canonicalPath);
+  }
+  if (context.cwd) {
+    return resolve(context.cwd);
+  }
+  return void 0;
+}
+function resolveProjectIdentityKey(context) {
+  if (context.platformProjectId && context.platformProjectId.trim().length > 0) {
+    return {
+      key: context.platformProjectId.trim(),
+      source: "platform_project_id",
+      canonicalPath: resolveCanonicalProjectPath(context)
+    };
+  }
+  const canonicalPath = resolveCanonicalProjectPath(context);
+  if (canonicalPath) {
+    return {
+      key: canonicalPath,
+      source: "canonical_path",
+      canonicalPath
+    };
+  }
+  return {
+    key: null,
+    source: "unresolved"
+  };
+}
+
+// src/platforms/pipeline.ts
+function skipWithDiagnostic(platform, errorType, fieldNames) {
+  return {
+    skipped: true,
+    reason: errorType,
+    diagnostic: createRedactedDiagnostic({
+      platform,
+      errorType,
+      fieldNames,
+      severity: "warning"
+    })
+  };
+}
+function processPlatformEvent(event) {
+  const contractValidation = validateAdapterContractVersion(
+    event.contractVersion,
+    SUPPORTED_ADAPTER_CONTRACT_MAJOR
+  );
+  if (!contractValidation.compatible) {
+    return skipWithDiagnostic(event.platform, "incompatible_contract_major", ["contractVersion"]);
+  }
+  const identity = resolveProjectIdentityKey(event.projectContext);
+  if (!identity.key) {
+    return skipWithDiagnostic(event.platform, "missing_project_identity", [
+      "platformProjectId",
+      "canonicalPath",
+      "cwd"
+    ]);
+  }
+  return {
+    skipped: false,
+    projectIdentityKey: identity.key
+  };
+}
+
+// src/platforms/index.ts
+var defaultRegistry = null;
+function getDefaultAdapterRegistry() {
+  if (!defaultRegistry) {
+    defaultRegistry = new AdapterRegistry();
+    defaultRegistry.register(claudeAdapter);
+    defaultRegistry.register(opencodeAdapter);
+  }
+  return defaultRegistry;
 }
 var MIN_OBSERVATIONS_FOR_SUMMARY = 3;
 async function captureFileChanges(mind) {
@@ -460,11 +737,25 @@ This file was modified during the session.`,
     debug(`Failed to capture file changes: ${error}`);
   }
 }
-async function main() {
+async function runStopHook() {
   try {
     const input = await readStdin();
     const hookInput = JSON.parse(input);
     debug(`Session stopping: ${hookInput.session_id}`);
+    const platform = detectPlatform(hookInput);
+    const adapter = getDefaultAdapterRegistry().resolve(platform);
+    if (!adapter) {
+      debug(`Unsupported platform at stop hook: ${platform}`);
+      writeOutput({ continue: true });
+      return;
+    }
+    const normalizedStop = adapter.normalizeSessionStop(hookInput);
+    const pipelineResult = processPlatformEvent(normalizedStop);
+    if (pipelineResult.skipped) {
+      debug(`Skipping stop processing: ${pipelineResult.reason}`);
+      writeOutput({ continue: true });
+      return;
+    }
     const mind = await getMind();
     const stats = await mind.stats();
     await captureFileChanges(mind);
@@ -559,6 +850,10 @@ function generateSessionSummary(observations, transcript) {
     summary
   };
 }
-main();
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  void runStopHook();
+}
+
+export { runStopHook };
 //# sourceMappingURL=stop.js.map
 //# sourceMappingURL=stop.js.map

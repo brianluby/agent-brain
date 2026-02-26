@@ -62,6 +62,9 @@ declare const DEFAULT_CONFIG: MindConfig;
 /** Hook input from Claude Code */
 interface HookInput {
     session_id: string;
+    platform?: string;
+    contract_version?: string;
+    project_id?: string;
     transcript_path?: string;
     cwd?: string;
     hook_event_name?: string;
@@ -120,6 +123,7 @@ interface MindStats {
 declare class Mind {
     private memvid;
     private config;
+    private memoryPath;
     private sessionId;
     private initialized;
     private constructor();
@@ -231,4 +235,141 @@ declare function extractKeyInfo(toolName: string, output: string): string;
  */
 declare function classifyObservationType(toolName: string, output: string): "discovery" | "decision" | "problem" | "solution" | "pattern" | "warning" | "success" | "refactor" | "bugfix" | "feature";
 
-export { DEFAULT_CONFIG, type HookInput, type HookOutput, type InjectedContext, type MemorySearchResult, Mind, type MindConfig, type MindStats, type Observation, type ObservationMetadata, type ObservationType, type SessionSummary, classifyObservationType, debug, estimateTokens, extractKeyInfo, formatTimestamp, generateId, getMind, readStdin, resetMind, safeJsonParse, truncateToTokens, writeOutput };
+type PlatformEventType = "session_start" | "tool_observation" | "session_stop";
+interface PlatformProjectContext {
+    platformProjectId?: string;
+    canonicalPath?: string;
+    cwd?: string;
+}
+interface PlatformEventBase {
+    eventId: string;
+    eventType: PlatformEventType;
+    platform: string;
+    contractVersion: string;
+    sessionId: string;
+    timestamp: number;
+    projectContext: PlatformProjectContext;
+}
+interface SessionStartPayload {
+    hookEventName?: string;
+    permissionMode?: string;
+    transcriptPath?: string;
+}
+interface ToolObservationPayload {
+    toolName?: string;
+    toolInput?: Record<string, unknown>;
+    toolResponse?: unknown;
+}
+interface SessionStopPayload {
+    transcriptPath?: string;
+}
+interface SessionStartEvent extends PlatformEventBase {
+    eventType: "session_start";
+    payload: SessionStartPayload;
+}
+interface ToolObservationEvent extends PlatformEventBase {
+    eventType: "tool_observation";
+    payload: ToolObservationPayload;
+}
+interface SessionStopEvent extends PlatformEventBase {
+    eventType: "session_stop";
+    payload: SessionStopPayload;
+}
+type PlatformEvent = SessionStartEvent | ToolObservationEvent | SessionStopEvent;
+
+declare const SUPPORTED_ADAPTER_CONTRACT_MAJOR = 1;
+interface ContractValidationResult {
+    compatible: boolean;
+    supportedMajor: number;
+    adapterMajor: number | null;
+    reason?: string;
+}
+declare function validateAdapterContractVersion(version: string, supportedMajor?: number): ContractValidationResult;
+interface PlatformAdapter {
+    platform: string;
+    contractVersion: string;
+    normalizeSessionStart(input: HookInput): SessionStartEvent;
+    normalizeToolObservation(input: HookInput): ToolObservationEvent | null;
+    normalizeSessionStop(input: HookInput): SessionStopEvent;
+}
+
+interface ReadonlyAdapterRegistry {
+    resolve(platform: string): PlatformAdapter | null;
+    listPlatforms(): string[];
+}
+
+type DiagnosticSeverity = "warning" | "error";
+interface AdapterDiagnostic {
+    diagnosticId: string;
+    timestamp: number;
+    platform: string;
+    errorType: string;
+    fieldNames?: string[];
+    severity: DiagnosticSeverity;
+    redacted: true;
+    retentionDays: number;
+    expiresAt: number;
+}
+
+interface CreateDiagnosticInput {
+    platform: string;
+    errorType: string;
+    fieldNames?: string[];
+    severity?: DiagnosticSeverity;
+    now?: number;
+}
+declare function createRedactedDiagnostic(input: CreateDiagnosticInput): AdapterDiagnostic;
+
+type ProjectIdentitySource = "platform_project_id" | "canonical_path" | "unresolved";
+interface ProjectIdentityResolution {
+    key: string | null;
+    source: ProjectIdentitySource;
+    canonicalPath?: string;
+}
+declare function resolveProjectIdentityKey(context: PlatformProjectContext): ProjectIdentityResolution;
+
+type MemoryPathMode = "legacy_first" | "platform_opt_in";
+interface MemoryPathPolicyInput {
+    projectDir: string;
+    platform: string;
+    legacyRelativePath: string;
+    platformRelativePath?: string;
+    platformOptIn?: boolean;
+}
+interface MemoryPathPolicyResult {
+    mode: MemoryPathMode;
+    memoryPath: string;
+}
+declare function resolveMemoryPathPolicy(input: MemoryPathPolicyInput): MemoryPathPolicyResult;
+
+interface ProcessPlatformEventResult {
+    skipped: boolean;
+    reason?: string;
+    projectIdentityKey?: string;
+    diagnostic?: AdapterDiagnostic;
+}
+declare function processPlatformEvent(event: PlatformEvent): ProcessPlatformEventResult;
+
+declare function detectPlatformFromEnv(): string;
+declare function detectPlatform(input: HookInput): string;
+
+declare const claudeAdapter: PlatformAdapter;
+
+declare const opencodeAdapter: PlatformAdapter;
+
+/**
+ * Example minimal adapter scaffold for future platform onboarding.
+ * This adapter is intentionally not registered by default.
+ *
+ * To create a new adapter for your platform, use:
+ *   export const myAdapter = createAdapter("my-platform");
+ * Then register it via AdapterRegistry.register(myAdapter).
+ */
+declare const exampleAdapter: PlatformAdapter;
+
+declare function createAdapter(platform: string): PlatformAdapter;
+
+declare function getDefaultAdapterRegistry(): ReadonlyAdapterRegistry;
+declare function resetDefaultAdapterRegistry(): void;
+
+export { DEFAULT_CONFIG, type HookInput, type HookOutput, type InjectedContext, type MemorySearchResult, Mind, type MindConfig, type MindStats, type Observation, type ObservationMetadata, type ObservationType, type ReadonlyAdapterRegistry, SUPPORTED_ADAPTER_CONTRACT_MAJOR, type SessionSummary, classifyObservationType, claudeAdapter, createAdapter, createRedactedDiagnostic, debug, detectPlatform, detectPlatformFromEnv, estimateTokens, exampleAdapter, extractKeyInfo, formatTimestamp, generateId, getDefaultAdapterRegistry, getMind, opencodeAdapter, processPlatformEvent, readStdin, resetDefaultAdapterRegistry, resetMind, resolveMemoryPathPolicy, resolveProjectIdentityKey, safeJsonParse, truncateToTokens, validateAdapterContractVersion, writeOutput };

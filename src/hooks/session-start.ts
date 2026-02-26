@@ -2,87 +2,125 @@
 /**
  * Memvid Mind - Session Start Hook
  *
- * LIGHTWEIGHT startup - does NOT load the SDK.
- * SDK is loaded lazily on first tool use instead.
- * This keeps Claude startup fast (< 1 second).
+ * Lightweight startup path that performs adapter validation,
+ * fail-open checks, and context injection without loading the SDK.
  */
 
 import { readStdin, writeOutput, debug } from "../utils/helpers.js";
 import type { HookInput } from "../types.js";
 import { existsSync, statSync } from "node:fs";
-import { resolve, basename } from "node:path";
+import { basename } from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  detectPlatform,
+  getDefaultAdapterRegistry,
+  processPlatformEvent,
+  resolveMemoryPathPolicy,
+} from "../platforms/index.js";
 
-async function main() {
+function buildContextLines(
+  projectName: string,
+  memoryDisplayPath: string,
+  memoryExists: boolean,
+  fileSizeKB: number,
+  platform: string,
+  warning?: string
+): string[] {
+  const contextLines: string[] = [];
+  contextLines.push("<memvid-mind-context>");
+  const displayName = platform === "claude" ? "Claude" : platform.charAt(0).toUpperCase() + platform.slice(1);
+  contextLines.push(memoryExists ? `# 🧠 ${displayName} Mind Active` : `# 🧠 ${displayName} Mind Ready`);
+  contextLines.push("");
+  contextLines.push(`📁 Project: **${projectName}**`);
+  contextLines.push(`🤖 Platform: **${platform}**`);
+
+  if (memoryExists) {
+    contextLines.push(`💾 Memory: \`${memoryDisplayPath}\` (${fileSizeKB} KB)`);
+  } else {
+    contextLines.push(`💾 Memory will be created at: \`${memoryDisplayPath}\``);
+  }
+
+  if (warning) {
+    contextLines.push("");
+    contextLines.push(`⚠️ ${warning}`);
+  }
+
+  contextLines.push("");
+  contextLines.push("**Commands:**");
+  contextLines.push("- `/mind:search <query>` - Search memories");
+  contextLines.push("- `/mind:ask <question>` - Ask your memory");
+  contextLines.push("- `/mind:recent` - View timeline");
+  contextLines.push("- `/mind:stats` - View statistics");
+  contextLines.push("");
+  contextLines.push("_Memories are captured automatically from your tool use._");
+  contextLines.push("</memvid-mind-context>");
+  return contextLines;
+}
+
+export function buildSessionStartOutput(hookInput: HookInput): Record<string, unknown> {
+  const projectDir = hookInput.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  const projectName = basename(projectDir);
+  const platform = detectPlatform(hookInput);
+  const pathPolicy = resolveMemoryPathPolicy({
+    projectDir,
+    platform,
+    legacyRelativePath: ".claude/mind.mv2",
+    platformRelativePath: process.env.MEMVID_PLATFORM_MEMORY_PATH,
+    platformOptIn: process.env.MEMVID_PLATFORM_PATH_OPT_IN === "1",
+  });
+
+  const memoryExists = existsSync(pathPolicy.memoryPath);
+  let fileSizeKB = 0;
+  if (memoryExists) {
+    try {
+      fileSizeKB = Math.round(statSync(pathPolicy.memoryPath).size / 1024);
+    } catch {
+      fileSizeKB = 0;
+    }
+  }
+
+  const registry = getDefaultAdapterRegistry();
+  const adapter = registry.resolve(platform);
+
+  let warning: string | undefined;
+  if (!adapter) {
+    warning = "Unsupported platform detected: memory capture disabled for this session.";
+  } else {
+    const event = adapter.normalizeSessionStart(hookInput);
+    const result = processPlatformEvent(event);
+    if (result.skipped) {
+      warning = `Memory capture disabled for this session (${result.reason}).`;
+    }
+  }
+
+  const output: Record<string, unknown> = { continue: true };
+  output.hookSpecificOutput = {
+    hookEventName: "SessionStart",
+    additionalContext: buildContextLines(
+      projectName,
+      pathPolicy.memoryPath.replace(`${projectDir}/`, ""),
+      memoryExists,
+      fileSizeKB,
+      platform,
+      warning
+    ).join("\n"),
+  };
+
+  return output;
+}
+
+export async function runSessionStartHook(): Promise<void> {
   try {
-    // Read hook input from stdin
     const input = await readStdin();
     const hookInput: HookInput = JSON.parse(input);
-
     debug(`Session starting: ${hookInput.session_id}`);
-
-    // Get project info without loading SDK
-    const projectDir = hookInput.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
-    const projectName = basename(projectDir);
-    const memoryPath = resolve(projectDir, ".claude/mind.mv2");
-
-    // Quick check if memory file exists (no SDK needed)
-    const memoryExists = existsSync(memoryPath);
-
-    // Build minimal context without loading SDK
-    const contextLines: string[] = [];
-
-    if (memoryExists) {
-      try {
-        const stats = statSync(memoryPath);
-        const fileSizeKB = Math.round(stats.size / 1024);
-
-        contextLines.push("<memvid-mind-context>");
-        contextLines.push("# 🧠 Claude Mind Active");
-        contextLines.push("");
-        contextLines.push(`📁 Project: **${projectName}**`);
-        contextLines.push(`💾 Memory: \`.claude/mind.mv2\` (${fileSizeKB} KB)`);
-        contextLines.push("");
-        contextLines.push("**Commands:**");
-        contextLines.push("- `/mind:search <query>` - Search memories");
-        contextLines.push("- `/mind:ask <question>` - Ask your memory");
-        contextLines.push("- `/mind:recent` - View timeline");
-        contextLines.push("- `/mind:stats` - View statistics");
-        contextLines.push("");
-        contextLines.push("_Memories are captured automatically from your tool use._");
-        contextLines.push("</memvid-mind-context>");
-      } catch {
-        // Ignore stat errors
-      }
-    } else {
-      // First time - memory will be created on first observation
-      contextLines.push("<memvid-mind-context>");
-      contextLines.push("# 🧠 Claude Mind Ready");
-      contextLines.push("");
-      contextLines.push(`📁 Project: **${projectName}**`);
-      contextLines.push("💾 Memory will be created at: \`.claude/mind.mv2\`");
-      contextLines.push("");
-      contextLines.push("_Your observations will be automatically captured._");
-      contextLines.push("</memvid-mind-context>");
-    }
-
-    // SessionStart hooks use hookSpecificOutput.additionalContext
-    const output: any = {
-      continue: true,
-    };
-
-    if (contextLines.length > 0) {
-      output.hookSpecificOutput = {
-        hookEventName: "SessionStart",
-        additionalContext: contextLines.join("\n"),
-      };
-    }
-
-    writeOutput(output);
+    writeOutput(buildSessionStartOutput(hookInput));
   } catch (error) {
     debug(`Error: ${error}`);
-    // Don't block on errors
     writeOutput({ continue: true });
   }
 }
 
-main();
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  void runSessionStartHook();
+}

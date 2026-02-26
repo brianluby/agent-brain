@@ -100,6 +100,14 @@ No database. No cloud. No API keys.
 
 Or just ask naturally: *"mind stats"*, *"search my memory for auth bugs"*, etc.
 
+## OpenCode Support
+
+Memvid Mind now supports the same core memory lifecycle through a platform adapter model.
+
+- Claude and OpenCode sessions can share project memory continuity.
+- Unknown or incompatible platforms fail open (session continues, memory capture safely skips).
+- Adapter contracts are SemVer-checked and validated through regression and contract tests.
+
 <br />
 
 ## CLI (Optional)

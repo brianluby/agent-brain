@@ -87,6 +87,9 @@ export const DEFAULT_CONFIG: MindConfig = {
 /** Hook input from Claude Code */
 export interface HookInput {
   session_id: string;
+  platform?: string;
+  contract_version?: string;
+  project_id?: string;
   transcript_path?: string;
   cwd?: string;
   hook_event_name?: string;

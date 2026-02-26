@@ -26,3 +26,6 @@ tsup.config.ts
 !README.md
 .DS_Store
 node_modules/
+build/
+coverage/
+.env*

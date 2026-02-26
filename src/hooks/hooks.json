@@ -1,5 +1,5 @@
 {
-  "description": "Memvid Mind - Persistent memory for Claude Code",
+  "description": "Memvid Mind - Persistent memory for Claude Code and OpenCode",
   "hooks": {
     "SessionStart": [
       {

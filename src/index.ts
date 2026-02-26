@@ -32,3 +32,20 @@ export {
   extractKeyInfo,
   classifyObservationType,
 } from "./utils/helpers.js";
+export {
+  getDefaultAdapterRegistry,
+  resetDefaultAdapterRegistry,
+  detectPlatform,
+  detectPlatformFromEnv,
+  processPlatformEvent,
+  resolveProjectIdentityKey,
+  resolveMemoryPathPolicy,
+  createRedactedDiagnostic,
+  validateAdapterContractVersion,
+  SUPPORTED_ADAPTER_CONTRACT_MAJOR,
+  claudeAdapter,
+  opencodeAdapter,
+  exampleAdapter,
+  createAdapter,
+} from "./platforms/index.js";
+export type { ReadonlyAdapterRegistry } from "./platforms/index.js";
