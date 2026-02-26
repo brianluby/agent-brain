@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="agent-brain.jpg" alt="Agent Brain" width="320" />
+<img src="agent-brain.png" alt="Agent Brain" width="320" />
 
 ### Give your agents photographic memory.
 
