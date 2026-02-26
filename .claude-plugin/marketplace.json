@@ -8,7 +8,7 @@
   "plugins": [
     {
       "name": "mind",
-      "description": "Claude Brain - Give Claude photographic memory in ONE portable file",
+      "description": "Agent-Brain - Give Claude photographic memory in ONE portable file",
       "version": "1.0.11",
       "source": "./"
     }
