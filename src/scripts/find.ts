@@ -9,7 +9,7 @@ import { existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { openMemorySafely } from "./utils.js";
+import { openMemorySafely, resolveScriptMemoryPath } from "./utils.js";
 
 // Ensure dependencies are installed before importing SDK
 async function ensureDeps() {
@@ -49,8 +49,13 @@ async function main() {
   }
 
   // Get memory file path
-  const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-  const memoryPath = resolve(projectDir, ".claude/mind.mv2");
+  const projectDir = process.env.CLAUDE_PROJECT_DIR || process.env.OPENCODE_PROJECT_DIR || process.cwd();
+  const { memoryPath, migrationPrompt } = resolveScriptMemoryPath(projectDir);
+
+  if (migrationPrompt) {
+    console.log("Legacy memory detected at .claude/mind.mv2.");
+    console.log(`Move it to .agent-brain/mind.mv2? Run: ${migrationPrompt}\n`);
+  }
 
   // Load SDK dynamically
   const { use, create } = await loadSDK();

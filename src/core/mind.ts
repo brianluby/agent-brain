@@ -21,6 +21,7 @@ import {
   type MindStats,
   type MemorySearchResult,
   DEFAULT_CONFIG,
+  DEFAULT_MEMORY_PATH,
 } from "../types.js";
 import { generateId, estimateTokens } from "../utils/helpers.js";
 import { withMemvidLock } from "../utils/memvid-lock.js";
@@ -148,14 +149,18 @@ export class Mind {
 
     const config = { ...DEFAULT_CONFIG, ...configOverrides };
 
-    // Resolve path relative to project dir (use CLAUDE_PROJECT_DIR if available)
-    const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+    // Resolve path relative to project dir from host environment
+    const projectDir = process.env.CLAUDE_PROJECT_DIR
+      || process.env.OPENCODE_PROJECT_DIR
+      || process.cwd();
     const platform = detectPlatformFromEnv();
     const optIn = process.env.MEMVID_PLATFORM_PATH_OPT_IN === "1";
+    const legacyFallbacks = config.memoryPath === DEFAULT_MEMORY_PATH ? [".claude/mind.mv2"] : [];
     const pathPolicy = resolveMemoryPathPolicy({
       projectDir,
       platform,
-      legacyRelativePath: config.memoryPath,
+      defaultRelativePath: config.memoryPath,
+      legacyRelativePaths: legacyFallbacks,
       platformRelativePath: process.env.MEMVID_PLATFORM_MEMORY_PATH,
       platformOptIn: optIn,
     });
@@ -306,7 +311,7 @@ export class Mind {
       const rawTags = Array.isArray(frame.tags)
         ? frame.tags.filter((tag: unknown): tag is string => typeof tag === "string")
         : [];
-      const prefixedToolTag = rawTags.find((tag) => tag.startsWith("tool:"));
+      const prefixedToolTag = rawTags.find((tag: string) => tag.startsWith("tool:"));
 
       const labels = Array.isArray(frame.labels)
         ? frame.labels.filter((label: unknown): label is string => typeof label === "string")
@@ -321,7 +326,7 @@ export class Mind {
         labels,
       }) || "discovery";
 
-      const legacyToolTag = rawTags.find((tag) => {
+      const legacyToolTag = rawTags.find((tag: string) => {
         if (tag.startsWith("tool:") || tag.startsWith("session:")) {
           return false;
         }
@@ -446,7 +451,7 @@ export class Mind {
     const tags = Array.isArray(frame?.tags)
       ? frame.tags.filter((tag: unknown): tag is string => typeof tag === "string")
       : [];
-    const sessionTag = tags.find((tag) => tag.startsWith("session:"));
+    const sessionTag = tags.find((tag: string) => tag.startsWith("session:"));
     if (sessionTag) {
       return sessionTag.slice("session:".length);
     }
@@ -636,7 +641,7 @@ export class Mind {
           const metadata = frameInfo?.metadata && typeof frameInfo.metadata === "object"
             ? frameInfo.metadata as Record<string, unknown>
             : {};
-          const toolTag = tags.find((tag) => typeof tag === "string" && tag.startsWith("tool:"));
+          const toolTag = tags.find((tag: string) => typeof tag === "string" && tag.startsWith("tool:"));
           const ts = this.normalizeTimestampMs(frameInfo?.timestamp || frame.timestamp || 0);
           const observationType = this.extractObservationType({
             label: labels[0],

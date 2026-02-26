@@ -1,11 +1,12 @@
-#!/usr/bin/env node
-import { existsSync, readdirSync, unlinkSync, readFileSync, mkdirSync, writeFileSync, renameSync, rmSync } from 'fs';
-import { dirname, resolve, isAbsolute, relative, sep } from 'path';
+import { existsSync, statSync, readdirSync, unlinkSync, readFileSync, mkdirSync, writeFileSync, renameSync, rmSync } from 'fs';
+import { relative, basename, dirname, isAbsolute, resolve, sep } from 'path';
+import { tool } from '@opencode-ai/plugin';
 import { mkdir, open } from 'fs/promises';
 import { randomBytes } from 'crypto';
 import lockfile from 'proper-lockfile';
 import { tmpdir } from 'os';
-import { fileURLToPath } from 'url';
+
+// src/opencode/plugin.ts
 
 // src/types.ts
 var DEFAULT_MEMORY_PATH = ".agent-brain/mind.mv2";
@@ -22,23 +23,6 @@ function generateId() {
 }
 function estimateTokens(text) {
   return Math.ceil(text.length / 4);
-}
-async function readStdin() {
-  const chunks = [];
-  return new Promise((resolve5, reject) => {
-    process.stdin.on("data", (chunk) => chunks.push(chunk));
-    process.stdin.on("end", () => resolve5(Buffer.concat(chunks).toString("utf8")));
-    process.stdin.on("error", reject);
-  });
-}
-function writeOutput(output) {
-  console.log(JSON.stringify(output));
-  process.exit(0);
-}
-function debug(message) {
-  if (process.env.MEMVID_MIND_DEBUG === "1") {
-    console.error(`[memvid-mind] ${message}`);
-  }
 }
 function classifyObservationType(toolName, output) {
   const lowerOutput = output.toLowerCase();
@@ -158,13 +142,6 @@ function detectPlatformFromEnv() {
   }
   return "claude";
 }
-function detectPlatform(input) {
-  const explicitFromHook = normalizePlatform(input.platform);
-  if (explicitFromHook) {
-    return explicitFromHook;
-  }
-  return detectPlatformFromEnv();
-}
 
 // src/core/mind.ts
 function pruneBackups(memoryPath, keepCount) {
@@ -271,8 +248,8 @@ var Mind = class _Mind {
         memvid = await create(memoryPath, "basic");
         return;
       }
-      const { statSync, renameSync: renameSync2, unlinkSync: unlinkSync2 } = await import('fs');
-      const fileSize = statSync(memoryPath).size;
+      const { statSync: statSync2, renameSync: renameSync2, unlinkSync: unlinkSync2 } = await import('fs');
+      const fileSize = statSync2(memoryPath).size;
       const fileSizeMB = fileSize / (1024 * 1024);
       if (fileSizeMB > MAX_FILE_SIZE_MB) {
         console.error(`[memvid-mind] Memory file too large (${fileSizeMB.toFixed(1)}MB), likely corrupted. Creating fresh memory...`);
@@ -390,7 +367,7 @@ var Mind = class _Mind {
         }
         return tag.toLowerCase() !== observationType;
       });
-      const tool = typeof prefixedToolTag === "string" ? prefixedToolTag.replace(/^tool:/, "") : typeof metadata.tool === "string" ? metadata.tool : legacyToolTag;
+      const tool2 = typeof prefixedToolTag === "string" ? prefixedToolTag.replace(/^tool:/, "") : typeof metadata.tool === "string" ? metadata.tool : legacyToolTag;
       const timestamp = this.normalizeTimestampMs(
         metadata.timestamp || frame.timestamp || (typeof frame.created_at === "string" ? Date.parse(frame.created_at) : 0)
       );
@@ -399,7 +376,7 @@ var Mind = class _Mind {
           id: String(metadata.observationId || frame.frame_id || generateId()),
           timestamp,
           type: observationType,
-          tool,
+          tool: tool2,
           summary: frame.title?.replace(/^\[.*?\]\s*/, "") || frame.snippet || "",
           content: frame.text || frame.snippet || "",
           metadata: {
@@ -610,7 +587,7 @@ var Mind = class _Mind {
         reverse: true
       });
       const frames = this.toTimelineFrames(timeline);
-      const recentObservations2 = [];
+      const recentObservations = [];
       const FRAME_INFO_BATCH_SIZE = 20;
       for (let start = 0; start < frames.length; start += FRAME_INFO_BATCH_SIZE) {
         const batch = frames.slice(start, start + FRAME_INFO_BATCH_SIZE);
@@ -634,7 +611,7 @@ var Mind = class _Mind {
             labels,
             metadata
           }) || "discovery";
-          recentObservations2.push({
+          recentObservations.push({
             id: String(metadata.observationId || frame.metadata?.observationId || frame.frame_id),
             timestamp: ts,
             type: observationType,
@@ -673,14 +650,14 @@ var Mind = class _Mind {
         }
       }
       let tokenCount = 0;
-      for (const obs of recentObservations2) {
+      for (const obs of recentObservations) {
         const text = `[${obs.type}] ${obs.summary}`;
         const tokens = estimateTokens(text);
         if (tokenCount + tokens > this.config.maxContextTokens) break;
         tokenCount += tokens;
       }
       return {
-        recentObservations: recentObservations2,
+        recentObservations,
         relevantMemories,
         sessionSummaries,
         tokenCount
@@ -1082,12 +1059,6 @@ function truncateToTarget(text) {
   }
   return text.slice(0, TARGET_COMPRESSED_SIZE - 20) + "\n... (compressed)";
 }
-function getCompressionStats(originalSize, compressedSize) {
-  const saved = originalSize - compressedSize;
-  const ratio = originalSize / compressedSize;
-  const savedPercent = (saved / originalSize * 100).toFixed(1);
-  return { ratio, saved, savedPercent };
-}
 
 // src/platforms/registry.ts
 var AdapterRegistry = class {
@@ -1428,6 +1399,8 @@ function getDefaultAdapterRegistry() {
   }
   return defaultRegistry;
 }
+
+// src/opencode/plugin.ts
 var OBSERVED_TOOLS = /* @__PURE__ */ new Set([
   "Read",
   "Edit",
@@ -1437,207 +1410,411 @@ var OBSERVED_TOOLS = /* @__PURE__ */ new Set([
   "Grep",
   "Glob",
   "WebFetch",
-  "WebSearch",
-  "Task",
-  "NotebookEdit"
+  "Task"
 ]);
+var ALWAYS_CAPTURE_TOOLS = /* @__PURE__ */ new Set(["Edit", "Write", "Update"]);
 var MIN_OUTPUT_LENGTH = 50;
-var DEDUP_WINDOW_MS = 6e4;
-var ALWAYS_CAPTURE_TOOLS = /* @__PURE__ */ new Set(["Edit", "Write", "Update", "NotebookEdit"]);
 var MAX_OUTPUT_LENGTH = 2500;
-var recentObservations = /* @__PURE__ */ new Map();
-function getObservationKey(toolName, toolInput) {
-  const inputStr = toolInput ? JSON.stringify(toolInput).slice(0, 200) : "";
-  return `${toolName}:${inputStr}`;
-}
-function isDuplicate(key) {
-  const lastSeen = recentObservations.get(key);
-  if (!lastSeen) return false;
-  return Date.now() - lastSeen < DEDUP_WINDOW_MS;
-}
-function markObserved(key) {
-  recentObservations.set(key, Date.now());
-  if (recentObservations.size > 100) {
-    const now = Date.now();
-    for (const [k, v] of recentObservations.entries()) {
-      if (now - v > DEDUP_WINDOW_MS * 2) {
-        recentObservations.delete(k);
-      }
+var MAX_SESSION_CACHE_SIZE = 500;
+var MAX_CALL_CACHE_PER_SESSION = 1e3;
+var TOOL_NAME_MAP = {
+  read: "Read",
+  edit: "Edit",
+  write: "Write",
+  update: "Update",
+  apply_patch: "Update",
+  bash: "Bash",
+  grep: "Grep",
+  glob: "Glob",
+  webfetch: "WebFetch",
+  task: "Task"
+};
+var seenSessionIntro = /* @__PURE__ */ new Set();
+var processedToolCallsBySession = /* @__PURE__ */ new Map();
+function addToLimitedSet(set, key, maxSize) {
+  if (set.has(key)) {
+    set.delete(key);
+  }
+  set.add(key);
+  while (set.size > maxSize) {
+    const oldest = set.values().next().value;
+    if (typeof oldest !== "string") {
+      break;
     }
+    set.delete(oldest);
   }
 }
-function generateSummary(toolName, toolInput, toolOutput) {
+function touchSessionCallCache(sessionID) {
+  const existing = processedToolCallsBySession.get(sessionID);
+  if (existing) {
+    processedToolCallsBySession.delete(sessionID);
+    processedToolCallsBySession.set(sessionID, existing);
+    return existing;
+  }
+  const callSet = /* @__PURE__ */ new Set();
+  processedToolCallsBySession.set(sessionID, callSet);
+  while (processedToolCallsBySession.size > MAX_SESSION_CACHE_SIZE) {
+    const oldestSessionID = processedToolCallsBySession.keys().next().value;
+    if (typeof oldestSessionID !== "string") {
+      break;
+    }
+    processedToolCallsBySession.delete(oldestSessionID);
+  }
+  return callSet;
+}
+function toCanonicalToolName(toolID) {
+  return TOOL_NAME_MAP[toolID.toLowerCase()] || null;
+}
+function toToolInput(args) {
+  if (!args || typeof args !== "object" || Array.isArray(args)) {
+    return void 0;
+  }
+  return args;
+}
+function toToolOutput(output) {
+  if (typeof output === "string") {
+    return output;
+  }
+  if (output === void 0 || output === null) {
+    return "";
+  }
+  try {
+    return JSON.stringify(output, null, 2);
+  } catch {
+    return String(output);
+  }
+}
+function summarizeTool(toolName, toolInput, rawOutput) {
   switch (toolName) {
     case "Read": {
-      const path = toolInput?.file_path || toolInput?.filePath;
-      const fileName = path?.split("/").pop() || "file";
-      const lines = toolOutput.split("\n").length;
-      return `Read ${fileName} (${lines} lines)`;
+      const path = toolInput?.filePath || "file";
+      const fileName = path.split("/").pop() || "file";
+      return `Read ${fileName}`;
     }
     case "Edit":
     case "Update": {
-      const path = toolInput?.file_path || toolInput?.filePath;
-      const fileName = path?.split("/").pop() || "file";
+      const path = toolInput?.filePath || "file";
+      const fileName = path.split("/").pop() || "file";
       return `Edited ${fileName}`;
     }
     case "Write": {
-      const path = toolInput?.file_path || toolInput?.filePath;
-      const fileName = path?.split("/").pop() || "file";
+      const path = toolInput?.filePath || "file";
+      const fileName = path.split("/").pop() || "file";
       return `Created ${fileName}`;
     }
     case "Bash": {
-      const cmd = toolInput?.command;
-      const shortCmd = cmd?.split("\n")[0].slice(0, 50) || "command";
-      const hasError = toolOutput.toLowerCase().includes("error") || toolOutput.toLowerCase().includes("failed");
-      return hasError ? `Command failed: ${shortCmd}` : `Ran: ${shortCmd}`;
+      const cmd = toolInput?.command || "command";
+      const hasError = /error|failed|exception/i.test(rawOutput);
+      return hasError ? `Command failed: ${cmd.slice(0, 60)}` : `Ran: ${cmd.slice(0, 60)}`;
     }
-    case "Grep": {
-      const pattern = toolInput?.pattern;
-      const matches = toolOutput.split("\n").filter(Boolean).length;
-      return `Found ${matches} matches for "${pattern?.slice(0, 30)}"`;
-    }
-    case "Glob": {
-      const pattern = toolInput?.pattern;
-      const matches = toolOutput.split("\n").filter(Boolean).length;
-      return `Found ${matches} files matching "${pattern?.slice(0, 30)}"`;
-    }
+    case "Grep":
+      return `Searched pattern: ${String(toolInput?.pattern || "").slice(0, 40)}`;
+    case "Glob":
+      return `Matched files: ${String(toolInput?.pattern || "").slice(0, 40)}`;
     case "WebFetch":
-    case "WebSearch": {
-      const url = toolInput?.url || toolInput?.query;
-      return `Fetched: ${url?.slice(0, 50)}`;
-    }
+      return `Fetched: ${String(toolInput?.url || "").slice(0, 60)}`;
     default:
       return `${toolName} completed`;
   }
 }
-function extractMetadata(toolName, toolInput, platform, projectIdentityKey) {
+function extractMetadata(toolName, toolInput, projectIdentityKey) {
   const metadata = {
-    platform,
+    platform: "opencode",
     projectIdentityKey
   };
-  if (!toolInput) return metadata;
-  switch (toolName) {
-    case "Read":
-    case "Edit":
-    case "Write":
-    case "Update": {
-      const filePath = toolInput.file_path || toolInput.filePath;
-      if (filePath) {
-        metadata.files = [filePath];
-      }
-      break;
-    }
-    case "Bash":
-      if (toolInput.command) {
-        metadata.command = toolInput.command.slice(0, 200);
-      }
-      break;
-    case "Grep":
-    case "Glob":
-      if (toolInput.pattern) {
-        metadata.pattern = toolInput.pattern;
-      }
-      if (toolInput.path) {
-        metadata.searchPath = toolInput.path;
-      }
-      break;
+  if (!toolInput) {
+    return metadata;
+  }
+  const filePath = toolInput.filePath || toolInput.file_path;
+  if (typeof filePath === "string" && (toolName === "Read" || toolName === "Edit" || toolName === "Write" || toolName === "Update")) {
+    metadata.files = [filePath];
+  }
+  if (toolName === "Bash" && typeof toolInput.command === "string") {
+    metadata.command = toolInput.command.slice(0, 200);
+  }
+  if ((toolName === "Grep" || toolName === "Glob") && typeof toolInput.pattern === "string") {
+    metadata.pattern = toolInput.pattern;
   }
   return metadata;
 }
-async function runPostToolUseHook() {
-  try {
-    const input = await readStdin();
-    const hookInput = JSON.parse(input);
-    const platform = detectPlatform(hookInput);
-    const adapter = getDefaultAdapterRegistry().resolve(platform);
-    if (!adapter) {
-      debug(`Skipping capture: unsupported platform ${platform}`);
-      writeOutput({ continue: true });
-      return;
-    }
-    const normalized = adapter.normalizeToolObservation(hookInput);
-    if (!normalized) {
-      writeOutput({ continue: true });
-      return;
-    }
-    const pipelineResult = processPlatformEvent(normalized);
-    if (pipelineResult.skipped || !pipelineResult.projectIdentityKey) {
-      debug(`Skipping event due to pipeline result: ${pipelineResult.reason}`);
-      writeOutput({ continue: true });
-      return;
-    }
-    const { toolName, toolInput, toolResponse } = normalized.payload;
-    if (!toolName || !OBSERVED_TOOLS.has(toolName)) {
-      writeOutput({ continue: true });
-      return;
-    }
-    const dedupKey = getObservationKey(toolName, toolInput);
-    if (isDuplicate(dedupKey)) {
-      debug(`Skipping duplicate observation: ${toolName}`);
-      writeOutput({ continue: true });
-      return;
-    }
-    const rawOutput = typeof toolResponse === "string" ? toolResponse : JSON.stringify(toolResponse, null, 2);
-    const alwaysCapture = ALWAYS_CAPTURE_TOOLS.has(toolName);
-    if (!alwaysCapture && (!rawOutput || rawOutput.length < MIN_OUTPUT_LENGTH)) {
-      writeOutput({ continue: true });
-      return;
-    }
-    let effectiveOutput = rawOutput || "";
-    if (alwaysCapture && effectiveOutput.length < MIN_OUTPUT_LENGTH) {
-      const filePath = toolInput?.file_path || toolInput?.filePath || "unknown file";
-      const fileName = filePath.split("/").pop() || "file";
-      effectiveOutput = `File modified: ${fileName}
-Path: ${filePath}
-Tool: ${toolName}`;
-    }
-    if (effectiveOutput.includes("<system-reminder>") || effectiveOutput.includes("<memvid-mind-context>")) {
-      writeOutput({ continue: true });
-      return;
-    }
-    const { compressed, wasCompressed, originalSize } = compressToolOutput(
-      toolName,
-      toolInput,
-      effectiveOutput
-    );
-    if (wasCompressed) {
-      const stats = getCompressionStats(originalSize, compressed.length);
-      debug(`Compression: ${stats.savedPercent}% (${originalSize} -> ${compressed.length})`);
-    }
-    const mind = await getMind();
-    const observationType = classifyObservationType(toolName, compressed);
-    const summary = generateSummary(toolName, toolInput, effectiveOutput);
-    const content = compressed.length > MAX_OUTPUT_LENGTH ? `${compressed.slice(0, MAX_OUTPUT_LENGTH)}
-... (truncated${wasCompressed ? ", compressed" : ""})` : compressed;
-    const metadata = extractMetadata(
-      toolName,
-      toolInput,
-      platform,
-      pipelineResult.projectIdentityKey
-    );
-    if (wasCompressed) {
-      metadata.compressed = true;
-      metadata.originalSize = originalSize;
-      metadata.compressedSize = compressed.length;
-    }
-    await mind.remember({
-      type: observationType,
-      summary,
-      content,
-      tool: toolName,
-      metadata
-    });
-    markObserved(dedupKey);
-    writeOutput({ continue: true });
-  } catch (error) {
-    debug(`Error: ${error}`);
-    writeOutput({ continue: true });
+function getUserPromptText(parts) {
+  return parts.filter((part) => {
+    return part.type === "text" && typeof part.text === "string";
+  }).map((part) => part.text).join("\n").trim();
+}
+function buildMigrationCommand(projectDir, fromPath, toPath) {
+  const fromDisplay = relative(projectDir, fromPath) || basename(fromPath);
+  const toDisplay = relative(projectDir, toPath) || basename(toPath);
+  return `mkdir -p "${dirname(toDisplay)}" && mv "${fromDisplay}" "${toDisplay}"`;
+}
+function buildInjectedContext(options) {
+  const lines = [];
+  lines.push("<agent-brain-context>");
+  lines.push("# Agent Brain Memory Context");
+  lines.push("");
+  lines.push(`Project: ${basename(options.projectDir)}`);
+  lines.push(`Platform: opencode`);
+  lines.push(`Memory: ${relative(options.projectDir, options.memoryPath) || basename(options.memoryPath)}${options.memoryExists ? ` (${options.fileSizeKB} KB)` : ""}`);
+  if (options.migrationCommand) {
+    lines.push("");
+    lines.push("Legacy memory file detected.");
+    lines.push(`Move it to the platform-agnostic path with: ${options.migrationCommand}`);
   }
+  if (options.recent.length > 0) {
+    lines.push("");
+    lines.push("Recent memory highlights:");
+    for (const item of options.recent.slice(0, 6)) {
+      lines.push(`- [${item.type}] ${item.summary}`);
+    }
+  }
+  if (options.relevant.length > 0) {
+    lines.push("");
+    lines.push("Relevant memories for this prompt:");
+    for (const item of options.relevant.slice(0, 4)) {
+      lines.push(`- [${item.type}] ${item.summary}`);
+    }
+  }
+  lines.push("");
+  lines.push("Use these memories as background context while responding.");
+  lines.push("</agent-brain-context>");
+  return lines.join("\n");
 }
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
-  void runPostToolUseHook();
-}
+var AgentBrainOpenCodePlugin = async ({ directory, project }) => {
+  return {
+    "chat.message": async (input, output) => {
+      if (seenSessionIntro.has(input.sessionID)) {
+        return;
+      }
+      addToLimitedSet(seenSessionIntro, input.sessionID, MAX_SESSION_CACHE_SIZE);
+      const pathPolicy = resolveMemoryPathPolicy({
+        projectDir: directory,
+        platform: "opencode",
+        defaultRelativePath: ".agent-brain/mind.mv2",
+        legacyRelativePaths: [".claude/mind.mv2"],
+        platformRelativePath: process.env.MEMVID_PLATFORM_MEMORY_PATH,
+        platformOptIn: process.env.MEMVID_PLATFORM_PATH_OPT_IN === "1"
+      });
+      const memoryExists = existsSync(pathPolicy.memoryPath);
+      let fileSizeKB = 0;
+      if (memoryExists) {
+        try {
+          fileSizeKB = Math.round(statSync(pathPolicy.memoryPath).size / 1024);
+        } catch {
+          fileSizeKB = 0;
+        }
+      }
+      const query = getUserPromptText(output.parts);
+      const mind = await getMind();
+      const context = await mind.getContext(query || void 0);
+      const migrationCommand = pathPolicy.migrationSuggestion ? buildMigrationCommand(
+        directory,
+        pathPolicy.migrationSuggestion.fromPath,
+        pathPolicy.migrationSuggestion.toPath
+      ) : void 0;
+      const injected = buildInjectedContext({
+        projectDir: directory,
+        memoryPath: pathPolicy.memoryPath,
+        memoryExists,
+        fileSizeKB,
+        recent: context.recentObservations.map((obs) => ({
+          type: obs.type,
+          summary: obs.summary
+        })),
+        relevant: context.relevantMemories.map((obs) => ({
+          type: obs.type,
+          summary: obs.summary
+        })),
+        migrationCommand
+      });
+      const part = {
+        id: `agent-brain-context-${Date.now()}`,
+        type: "text",
+        text: injected,
+        sessionID: input.sessionID,
+        messageID: output.message.id
+      };
+      output.parts.unshift(part);
+    },
+    "tool.execute.after": async (input, output) => {
+      const sessionCallCache = touchSessionCallCache(input.sessionID);
+      if (sessionCallCache.has(input.callID)) {
+        return;
+      }
+      const canonicalToolName = toCanonicalToolName(input.tool);
+      if (!canonicalToolName || !OBSERVED_TOOLS.has(canonicalToolName)) {
+        return;
+      }
+      const registry = getDefaultAdapterRegistry();
+      const adapter = registry.resolve("opencode");
+      if (!adapter) {
+        return;
+      }
+      const hookInput = {
+        session_id: input.sessionID,
+        platform: "opencode",
+        contract_version: "1.0.0",
+        project_id: project.id,
+        cwd: directory,
+        tool_name: canonicalToolName,
+        tool_input: toToolInput(input.args),
+        tool_response: output.output,
+        tool_use_id: input.callID
+      };
+      const normalized = adapter.normalizeToolObservation(hookInput);
+      if (!normalized) {
+        return;
+      }
+      const processed = processPlatformEvent(normalized);
+      if (processed.skipped || !processed.projectIdentityKey) {
+        return;
+      }
+      const rawOutput = toToolOutput(output.output);
+      const alwaysCapture = ALWAYS_CAPTURE_TOOLS.has(canonicalToolName);
+      if (!alwaysCapture && rawOutput.length < MIN_OUTPUT_LENGTH) {
+        return;
+      }
+      if (rawOutput.includes("<agent-brain-context>") || rawOutput.includes("<memvid-mind-context>")) {
+        return;
+      }
+      const toolInput = toToolInput(input.args);
+      const { compressed, wasCompressed, originalSize } = compressToolOutput(
+        canonicalToolName,
+        toolInput,
+        rawOutput
+      );
+      const content = compressed.length > MAX_OUTPUT_LENGTH ? `${compressed.slice(0, MAX_OUTPUT_LENGTH)}
+... (truncated${wasCompressed ? ", compressed" : ""})` : compressed;
+      const metadata = extractMetadata(
+        canonicalToolName,
+        toolInput,
+        processed.projectIdentityKey
+      );
+      if (wasCompressed) {
+        metadata.compressed = true;
+        metadata.originalSize = originalSize;
+        metadata.compressedSize = compressed.length;
+      }
+      const mind = await getMind();
+      await mind.remember({
+        type: classifyObservationType(canonicalToolName, content),
+        summary: summarizeTool(canonicalToolName, toolInput, rawOutput),
+        content,
+        tool: canonicalToolName,
+        metadata
+      });
+      addToLimitedSet(sessionCallCache, input.callID, MAX_CALL_CACHE_PER_SESSION);
+    },
+    tool: {
+      mind: tool({
+        description: "Query and store Agent Brain memories",
+        args: {
+          mode: tool.schema.enum(["search", "ask", "recent", "stats", "remember"]).describe("Operation to perform"),
+          query: tool.schema.string().optional().describe("Search query or question"),
+          limit: tool.schema.number().optional().describe("Result limit"),
+          type: tool.schema.enum([
+            "discovery",
+            "decision",
+            "problem",
+            "solution",
+            "pattern",
+            "warning",
+            "success",
+            "refactor",
+            "bugfix",
+            "feature"
+          ]).optional().describe("Observation type for remember mode"),
+          summary: tool.schema.string().optional().describe("Short memory summary"),
+          content: tool.schema.string().optional().describe("Detailed memory content")
+        },
+        async execute(args) {
+          const mind = await getMind();
+          const limit = args.limit && args.limit > 0 ? Math.min(args.limit, 25) : 10;
+          if (args.mode === "search") {
+            if (!args.query) {
+              return JSON.stringify({ success: false, error: "query is required for search" });
+            }
+            const results = await mind.search(args.query, limit);
+            return JSON.stringify({
+              success: true,
+              mode: "search",
+              query: args.query,
+              count: results.length,
+              results: results.map((item) => ({
+                score: item.score,
+                summary: item.observation.summary,
+                type: item.observation.type,
+                tool: item.observation.tool
+              }))
+            });
+          }
+          if (args.mode === "ask") {
+            if (!args.query) {
+              return JSON.stringify({ success: false, error: "query is required for ask" });
+            }
+            const answer = await mind.ask(args.query);
+            return JSON.stringify({ success: true, mode: "ask", answer });
+          }
+          if (args.mode === "recent") {
+            const context = await mind.getContext();
+            return JSON.stringify({
+              success: true,
+              mode: "recent",
+              count: Math.min(context.recentObservations.length, limit),
+              observations: context.recentObservations.slice(0, limit).map((obs) => ({
+                type: obs.type,
+                summary: obs.summary,
+                tool: obs.tool,
+                timestamp: obs.timestamp
+              }))
+            });
+          }
+          if (args.mode === "stats") {
+            const stats = await mind.stats();
+            return JSON.stringify({ success: true, mode: "stats", stats });
+          }
+          if (args.mode === "remember") {
+            if (!args.summary || !args.content) {
+              return JSON.stringify({
+                success: false,
+                error: "summary and content are required for remember"
+              });
+            }
+            const observationType = args.type || "discovery";
+            const id = await mind.remember({
+              type: observationType,
+              summary: args.summary,
+              content: args.content,
+              tool: "mind",
+              metadata: {
+                platform: "opencode",
+                source: "manual"
+              }
+            });
+            return JSON.stringify({ success: true, mode: "remember", id });
+          }
+          return JSON.stringify({
+            success: false,
+            error: `Unsupported mode: ${String(args.mode)}`
+          });
+        }
+      })
+    },
+    event: async ({ event }) => {
+      if (event.type !== "session.deleted") {
+        return;
+      }
+      const eventData = event.properties;
+      const sessionID = eventData.info?.id;
+      if (!sessionID) {
+        return;
+      }
+      seenSessionIntro.delete(sessionID);
+      processedToolCallsBySession.delete(sessionID);
+    }
+  };
+};
+var plugin_default = AgentBrainOpenCodePlugin;
 
-export { runPostToolUseHook };
-//# sourceMappingURL=post-tool-use.js.map
-//# sourceMappingURL=post-tool-use.js.map
+export { AgentBrainOpenCodePlugin, plugin_default as default };
+//# sourceMappingURL=plugin.js.map
+//# sourceMappingURL=plugin.js.map

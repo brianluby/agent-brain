@@ -5,7 +5,7 @@ description: Claude Mind - Search and manage Claude's persistent memory stored i
 
 # Claude Mind
 
-You have access to a persistent memory system powered by Claude Mind. All your observations, discoveries, and learnings are stored in a single `.claude/mind.mv2` file.
+You have access to a persistent memory system powered by Claude Mind. All your observations, discoveries, and learnings are stored in a single `.agent-brain/mind.mv2` file.
 
 ## How to Execute Memory Commands
 
@@ -55,7 +55,7 @@ Memories are automatically classified into these types:
 
 ## File Location
 
-Your memory is stored at: `.claude/mind.mv2`
+Your memory is stored at: `.agent-brain/mind.mv2`
 
 This file is:
 - **Portable** - Copy it anywhere, share with teammates

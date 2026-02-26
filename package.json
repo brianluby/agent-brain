@@ -1,10 +1,32 @@
 {
-  "name": "claude-brain",
-  "version": "1.0.11",
+  "name": "@brianluby/agent-brain",
+  "version": "1.1.0",
   "description": "Give Claude Code photographic memory in ONE portable file",
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "dist/opencode/plugin.js",
+  "types": "dist/opencode/plugin.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/opencode/plugin.d.ts",
+      "default": "./dist/opencode/plugin.js"
+    },
+    "./mind": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./opencode": {
+      "types": "./dist/opencode/plugin.d.ts",
+      "default": "./dist/opencode/plugin.js"
+    }
+  },
+  "opencode": {
+    "type": "plugin",
+    "hooks": [
+      "chat.message",
+      "tool.execute.after",
+      "event"
+    ]
+  },
   "scripts": {
     "build": "tsup && cp src/hooks/hooks.json dist/hooks/",
     "dev": "tsup --watch",
@@ -24,6 +46,8 @@
     "claude-code",
     "claude-code-plugin",
     "anthropic",
+    "opencode",
+    "opencode-plugin",
     "memory",
     "ai-memory",
     "context-persistence",
@@ -37,13 +61,17 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/memvid/claude-brain.git"
+    "url": "git+https://github.com/brianluby/Agent-brain.git"
   },
   "homepage": "https://memvid.com",
   "bugs": {
-    "url": "https://github.com/memvid/claude-brain/issues"
+    "url": "https://github.com/brianluby/Agent-brain/issues"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "dependencies": {
+    "@opencode-ai/plugin": "^1.2.10",
     "@memvid/sdk": "^2.0.149",
     "proper-lockfile": "^4.1.2"
   },

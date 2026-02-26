@@ -44,7 +44,7 @@ interface InjectedContext {
 }
 /** Configuration for Memvid Mind */
 interface MindConfig {
-    /** Path to the .memvid file (default: .mind.mv2 in project root) */
+    /** Path to the memory file (default: .agent-brain/mind.mv2 in project root) */
     memoryPath: string;
     /** Maximum observations to inject at session start */
     maxContextObservations: number;
@@ -125,6 +125,10 @@ declare class Mind {
     private config;
     private memoryPath;
     private sessionId;
+    private sessionStartTime;
+    private sessionObservationCount;
+    private cachedStats;
+    private cachedStatsFrameCount;
     private initialized;
     private constructor();
     /**
@@ -147,6 +151,17 @@ declare class Mind {
      */
     search(query: string, limit?: number): Promise<MemorySearchResult[]>;
     private searchUnlocked;
+    private toTimelineFrames;
+    private toSearchFrames;
+    private normalizeTimestampMs;
+    private parseSessionSummary;
+    private extractSessionSummary;
+    private extractSessionId;
+    private extractObservationType;
+    private extractPreviewFieldValues;
+    private extractObservationTypeFromPreview;
+    private parseLeadingJsonObject;
+    private extractSessionSummaryFromSearchHit;
     /**
      * Ask the memory a question (uses fast lexical search)
      */
@@ -332,13 +347,20 @@ type MemoryPathMode = "legacy_first" | "platform_opt_in";
 interface MemoryPathPolicyInput {
     projectDir: string;
     platform: string;
-    legacyRelativePath: string;
+    defaultRelativePath: string;
     platformRelativePath?: string;
     platformOptIn?: boolean;
+    legacyRelativePaths?: string[];
+}
+interface MemoryMigrationSuggestion {
+    fromPath: string;
+    toPath: string;
 }
 interface MemoryPathPolicyResult {
     mode: MemoryPathMode;
     memoryPath: string;
+    canonicalPath: string;
+    migrationSuggestion?: MemoryMigrationSuggestion;
 }
 declare function resolveMemoryPathPolicy(input: MemoryPathPolicyInput): MemoryPathPolicyResult;
 
