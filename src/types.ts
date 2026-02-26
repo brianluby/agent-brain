@@ -75,8 +75,11 @@ export interface MindConfig {
 }
 
 /** Default configuration */
+export const DEFAULT_MEMORY_PATH = ".agent-brain/mind.mv2";
+
+/** Default configuration */
 export const DEFAULT_CONFIG: MindConfig = {
-  memoryPath: ".agent-brain/mind.mv2",
+  memoryPath: DEFAULT_MEMORY_PATH,
   maxContextObservations: 20,
   maxContextTokens: 2000,
   autoCompress: true,

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { randomBytes } from 'crypto';
 import { existsSync, statSync, readFileSync, mkdirSync, writeFileSync, renameSync, rmSync } from 'fs';
-import { basename, relative, dirname, isAbsolute, resolve, sep } from 'path';
+import { basename, resolve, dirname, relative, isAbsolute, sep } from 'path';
 import { fileURLToPath } from 'url';
 import { tmpdir } from 'os';
 import lockfile from 'proper-lockfile';
@@ -11,9 +11,9 @@ function generateId() {
 }
 async function readStdin() {
   const chunks = [];
-  return new Promise((resolve4, reject) => {
+  return new Promise((resolve5, reject) => {
     process.stdin.on("data", (chunk) => chunks.push(chunk));
-    process.stdin.on("end", () => resolve4(Buffer.concat(chunks).toString("utf8")));
+    process.stdin.on("end", () => resolve5(Buffer.concat(chunks).toString("utf8")));
     process.stdin.on("error", reject);
   });
 }
@@ -317,7 +317,8 @@ function resolveProjectIdentityKey(context) {
   };
 }
 function defaultPlatformRelativePath(platform) {
-  const safePlatform = platform.replace(/[^a-z0-9_-]/gi, "-");
+  const normalizedPlatform = platform.trim().toLowerCase();
+  const safePlatform = normalizedPlatform.replace(/[^a-z0-9_-]/g, "-").replace(/^-+|-+$/g, "") || "unknown";
   return `.agent-brain/mind-${safePlatform}.mv2`;
 }
 function resolveInsideProject(projectDir, candidatePath) {
@@ -505,9 +506,9 @@ function buildSessionStartOutput(hookInput) {
   let warning;
   let migrationPrompt;
   if (pathPolicy.migrationSuggestion) {
-    const fromDisplay = relative(projectDir, pathPolicy.migrationSuggestion.fromPath) || basename(pathPolicy.migrationSuggestion.fromPath);
-    const toDisplay = relative(projectDir, pathPolicy.migrationSuggestion.toPath) || basename(pathPolicy.migrationSuggestion.toPath);
-    migrationPrompt = `mkdir -p "${dirname(toDisplay)}" && mv "${fromDisplay}" "${toDisplay}"`;
+    const fromAbs = resolve(pathPolicy.migrationSuggestion.fromPath);
+    const toAbs = resolve(pathPolicy.migrationSuggestion.toPath);
+    migrationPrompt = `mkdir -p "${dirname(toAbs)}" && mv "${fromAbs}" "${toAbs}"`;
   }
   if (!adapter) {
     warning = "Unsupported platform detected: memory capture disabled for this session.";

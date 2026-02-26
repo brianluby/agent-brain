@@ -8,8 +8,9 @@ import { tmpdir } from 'os';
 // src/core/mind.ts
 
 // src/types.ts
+var DEFAULT_MEMORY_PATH = ".agent-brain/mind.mv2";
 var DEFAULT_CONFIG = {
-  memoryPath: ".agent-brain/mind.mv2",
+  memoryPath: DEFAULT_MEMORY_PATH,
   maxContextObservations: 20,
   maxContextTokens: 2e3,
   autoCompress: true,
@@ -154,7 +155,8 @@ async function withMemvidLock(lockPath, fn) {
   }
 }
 function defaultPlatformRelativePath(platform) {
-  const safePlatform = platform.replace(/[^a-z0-9_-]/gi, "-");
+  const normalizedPlatform = platform.trim().toLowerCase();
+  const safePlatform = normalizedPlatform.replace(/[^a-z0-9_-]/g, "-").replace(/^-+|-+$/g, "") || "unknown";
   return `.agent-brain/mind-${safePlatform}.mv2`;
 }
 function resolveInsideProject(projectDir, candidatePath) {
@@ -317,7 +319,7 @@ var Mind = class _Mind {
     const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
     const platform = detectPlatformFromEnv();
     const optIn = process.env.MEMVID_PLATFORM_PATH_OPT_IN === "1";
-    const legacyFallbacks = config.memoryPath === ".agent-brain/mind.mv2" ? [".claude/mind.mv2"] : [];
+    const legacyFallbacks = config.memoryPath === DEFAULT_MEMORY_PATH ? [".claude/mind.mv2"] : [];
     const pathPolicy = resolveMemoryPathPolicy({
       projectDir,
       platform,

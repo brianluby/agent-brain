@@ -28,6 +28,8 @@ const OBSERVED_TOOLS = new Set([
 const ALWAYS_CAPTURE_TOOLS = new Set(["Edit", "Write", "Update"]);
 const MIN_OUTPUT_LENGTH = 50;
 const MAX_OUTPUT_LENGTH = 2500;
+const MAX_SESSION_CACHE_SIZE = 500;
+const MAX_CALL_CACHE_PER_SESSION = 1000;
 
 const TOOL_NAME_MAP: Record<string, string> = {
   read: "Read",
@@ -43,7 +45,43 @@ const TOOL_NAME_MAP: Record<string, string> = {
 };
 
 const seenSessionIntro = new Set<string>();
-const processedToolCalls = new Set<string>();
+const processedToolCallsBySession = new Map<string, Set<string>>();
+
+function addToLimitedSet(set: Set<string>, key: string, maxSize: number): void {
+  if (set.has(key)) {
+    set.delete(key);
+  }
+
+  set.add(key);
+
+  while (set.size > maxSize) {
+    const oldest = set.values().next().value;
+    if (typeof oldest !== "string") {
+      break;
+    }
+    set.delete(oldest);
+  }
+}
+
+function touchSessionCallCache(sessionID: string): Set<string> {
+  const existing = processedToolCallsBySession.get(sessionID);
+  if (existing) {
+    processedToolCallsBySession.delete(sessionID);
+    processedToolCallsBySession.set(sessionID, existing);
+    return existing;
+  }
+
+  const callSet = new Set<string>();
+  processedToolCallsBySession.set(sessionID, callSet);
+  while (processedToolCallsBySession.size > MAX_SESSION_CACHE_SIZE) {
+    const oldestSessionID = processedToolCallsBySession.keys().next().value;
+    if (typeof oldestSessionID !== "string") {
+      break;
+    }
+    processedToolCallsBySession.delete(oldestSessionID);
+  }
+  return callSet;
+}
 
 function toCanonicalToolName(toolID: string): string | null {
   return TOOL_NAME_MAP[toolID.toLowerCase()] || null;
@@ -208,7 +246,7 @@ export const AgentBrainOpenCodePlugin: Plugin = async ({ directory, project }) =
       if (seenSessionIntro.has(input.sessionID)) {
         return;
       }
-      seenSessionIntro.add(input.sessionID);
+      addToLimitedSet(seenSessionIntro, input.sessionID, MAX_SESSION_CACHE_SIZE);
 
       const pathPolicy = resolveMemoryPathPolicy({
         projectDir: directory,
@@ -261,7 +299,6 @@ export const AgentBrainOpenCodePlugin: Plugin = async ({ directory, project }) =
         id: `agent-brain-context-${Date.now()}`,
         type: "text",
         text: injected,
-        synthetic: true,
         sessionID: input.sessionID,
         messageID: output.message.id,
       } as Part;
@@ -270,8 +307,8 @@ export const AgentBrainOpenCodePlugin: Plugin = async ({ directory, project }) =
     },
 
     "tool.execute.after": async (input, output) => {
-      const callKey = `${input.sessionID}:${input.callID}`;
-      if (processedToolCalls.has(callKey)) {
+      const sessionCallCache = touchSessionCallCache(input.sessionID);
+      if (sessionCallCache.has(input.callID)) {
         return;
       }
 
@@ -350,7 +387,7 @@ export const AgentBrainOpenCodePlugin: Plugin = async ({ directory, project }) =
         metadata,
       });
 
-      processedToolCalls.add(callKey);
+      addToLimitedSet(sessionCallCache, input.callID, MAX_CALL_CACHE_PER_SESSION);
     },
 
     tool: {
@@ -474,11 +511,7 @@ export const AgentBrainOpenCodePlugin: Plugin = async ({ directory, project }) =
       }
 
       seenSessionIntro.delete(sessionID);
-      for (const key of processedToolCalls) {
-        if (key.startsWith(`${sessionID}:`)) {
-          processedToolCalls.delete(key);
-        }
-      }
+      processedToolCallsBySession.delete(sessionID);
     },
   };
 };

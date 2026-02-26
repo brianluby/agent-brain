@@ -21,6 +21,7 @@ import {
   type MindStats,
   type MemorySearchResult,
   DEFAULT_CONFIG,
+  DEFAULT_MEMORY_PATH,
 } from "../types.js";
 import { generateId, estimateTokens } from "../utils/helpers.js";
 import { withMemvidLock } from "../utils/memvid-lock.js";
@@ -152,7 +153,7 @@ export class Mind {
     const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
     const platform = detectPlatformFromEnv();
     const optIn = process.env.MEMVID_PLATFORM_PATH_OPT_IN === "1";
-    const legacyFallbacks = config.memoryPath === ".agent-brain/mind.mv2" ? [".claude/mind.mv2"] : [];
+    const legacyFallbacks = config.memoryPath === DEFAULT_MEMORY_PATH ? [".claude/mind.mv2"] : [];
     const pathPolicy = resolveMemoryPathPolicy({
       projectDir,
       platform,

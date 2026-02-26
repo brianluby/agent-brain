@@ -75,10 +75,14 @@ On first run, memory is created at:
 .agent-brain/mind.mv2
 ```
 
-If you already have a legacy file at `.claude/mind.mv2`, the plugin will prompt you to move it:
+If you already have a legacy file at `.claude/mind.mv2`, migrate it safely to `.agent-brain/mind.mv2`:
 
 ```bash
-mkdir -p ".agent-brain" && mv ".claude/mind.mv2" ".agent-brain/mind.mv2"
+if [ ! -f ".agent-brain/mind.mv2" ]; then
+  mkdir -p ".agent-brain" && mv ".claude/mind.mv2" ".agent-brain/mind.mv2"
+else
+  echo "Destination .agent-brain/mind.mv2 already exists. Back up both .claude/mind.mv2 and .agent-brain/mind.mv2, then reconcile manually."
+fi
 ```
 
 ### OpenCode

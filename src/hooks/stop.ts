@@ -19,13 +19,54 @@ import {
   processPlatformEvent,
 } from "../platforms/index.js";
 import { readFile, access } from "node:fs/promises";
-import { constants } from "node:fs";
-import { dirname } from "node:path";
+import { constants, existsSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 // Minimum observations to generate a session summary
 const MIN_OBSERVATIONS_FOR_SUMMARY = 3;
+
+function hasRepoMarker(path: string): boolean {
+  return existsSync(join(path, ".git")) || existsSync(join(path, "package.json"));
+}
+
+function findNearestRepoRoot(startPath: string): string | null {
+  let current = resolve(startPath);
+  while (true) {
+    if (hasRepoMarker(current)) {
+      return current;
+    }
+
+    const parent = dirname(current);
+    if (parent === current) {
+      return null;
+    }
+
+    current = parent;
+  }
+}
+
+function findRepoRoot(memoryPath: string): string {
+  const candidates = [
+    process.env.REPO_ROOT,
+    process.env.CLAUDE_PROJECT_DIR,
+    process.env.OPENCODE_PROJECT_DIR,
+    dirname(memoryPath),
+    process.cwd(),
+  ]
+    .filter((candidate): candidate is string => typeof candidate === "string" && candidate.trim().length > 0)
+    .map((candidate) => resolve(candidate));
+
+  for (const candidate of candidates) {
+    const repoRoot = findNearestRepoRoot(candidate);
+    if (repoRoot) {
+      return repoRoot;
+    }
+  }
+
+  return resolve(dirname(memoryPath));
+}
 
 /**
  * Capture file modifications at session end
@@ -39,7 +80,7 @@ async function captureFileChanges(mind: Awaited<ReturnType<typeof getMind>>) {
   try {
     // Get the working directory from the mind's memory path
     const memoryPath = mind.getMemoryPath();
-    const workDir = dirname(dirname(memoryPath));
+    const workDir = findRepoRoot(memoryPath);
 
     const allChangedFiles: string[] = [];
     let gitDiffContent = "";

@@ -9,7 +9,7 @@
 import { readStdin, writeOutput, debug } from "../utils/helpers.js";
 import type { HookInput } from "../types.js";
 import { existsSync, statSync } from "node:fs";
-import { basename, dirname, relative } from "node:path";
+import { basename, dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   detectPlatform,
@@ -94,9 +94,9 @@ export function buildSessionStartOutput(hookInput: HookInput): Record<string, un
   let migrationPrompt: string | undefined;
 
   if (pathPolicy.migrationSuggestion) {
-    const fromDisplay = relative(projectDir, pathPolicy.migrationSuggestion.fromPath) || basename(pathPolicy.migrationSuggestion.fromPath);
-    const toDisplay = relative(projectDir, pathPolicy.migrationSuggestion.toPath) || basename(pathPolicy.migrationSuggestion.toPath);
-    migrationPrompt = `mkdir -p "${dirname(toDisplay)}" && mv "${fromDisplay}" "${toDisplay}"`;
+    const fromAbs = resolve(pathPolicy.migrationSuggestion.fromPath);
+    const toAbs = resolve(pathPolicy.migrationSuggestion.toPath);
+    migrationPrompt = `mkdir -p "${dirname(toAbs)}" && mv "${fromAbs}" "${toAbs}"`;
   }
 
   if (!adapter) {

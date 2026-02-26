@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { constants, existsSync, readdirSync, unlinkSync, readFileSync, mkdirSync, writeFileSync, renameSync, rmSync } from 'fs';
-import { dirname, resolve, isAbsolute, relative, sep } from 'path';
+import { dirname, resolve, isAbsolute, relative, sep, join } from 'path';
 import { access, readFile, mkdir, open } from 'fs/promises';
 import { randomBytes } from 'crypto';
 import lockfile from 'proper-lockfile';
@@ -9,8 +9,9 @@ import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 
 // src/types.ts
+var DEFAULT_MEMORY_PATH = ".agent-brain/mind.mv2";
 var DEFAULT_CONFIG = {
-  memoryPath: ".agent-brain/mind.mv2",
+  memoryPath: DEFAULT_MEMORY_PATH,
   maxContextObservations: 20,
   maxContextTokens: 2e3,
   autoCompress: true,
@@ -25,9 +26,9 @@ function estimateTokens(text) {
 }
 async function readStdin() {
   const chunks = [];
-  return new Promise((resolve5, reject) => {
+  return new Promise((resolve6, reject) => {
     process.stdin.on("data", (chunk) => chunks.push(chunk));
-    process.stdin.on("end", () => resolve5(Buffer.concat(chunks).toString("utf8")));
+    process.stdin.on("end", () => resolve6(Buffer.concat(chunks).toString("utf8")));
     process.stdin.on("error", reject);
   });
 }
@@ -60,7 +61,8 @@ async function withMemvidLock(lockPath, fn) {
   }
 }
 function defaultPlatformRelativePath(platform) {
-  const safePlatform = platform.replace(/[^a-z0-9_-]/gi, "-");
+  const normalizedPlatform = platform.trim().toLowerCase();
+  const safePlatform = normalizedPlatform.replace(/[^a-z0-9_-]/g, "-").replace(/^-+|-+$/g, "") || "unknown";
   return `.agent-brain/mind-${safePlatform}.mv2`;
 }
 function resolveInsideProject(projectDir, candidatePath) {
@@ -223,7 +225,7 @@ var Mind = class _Mind {
     const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
     const platform = detectPlatformFromEnv();
     const optIn = process.env.MEMVID_PLATFORM_PATH_OPT_IN === "1";
-    const legacyFallbacks = config.memoryPath === ".agent-brain/mind.mv2" ? [".claude/mind.mv2"] : [];
+    const legacyFallbacks = config.memoryPath === DEFAULT_MEMORY_PATH ? [".claude/mind.mv2"] : [];
     const pathPolicy = resolveMemoryPathPolicy({
       projectDir,
       platform,
@@ -1126,10 +1128,42 @@ function getDefaultAdapterRegistry() {
   return defaultRegistry;
 }
 var MIN_OBSERVATIONS_FOR_SUMMARY = 3;
+function hasRepoMarker(path) {
+  return existsSync(join(path, ".git")) || existsSync(join(path, "package.json"));
+}
+function findNearestRepoRoot(startPath) {
+  let current = resolve(startPath);
+  while (true) {
+    if (hasRepoMarker(current)) {
+      return current;
+    }
+    const parent = dirname(current);
+    if (parent === current) {
+      return null;
+    }
+    current = parent;
+  }
+}
+function findRepoRoot(memoryPath) {
+  const candidates = [
+    process.env.REPO_ROOT,
+    process.env.CLAUDE_PROJECT_DIR,
+    process.env.OPENCODE_PROJECT_DIR,
+    dirname(memoryPath),
+    process.cwd()
+  ].filter((candidate) => typeof candidate === "string" && candidate.trim().length > 0).map((candidate) => resolve(candidate));
+  for (const candidate of candidates) {
+    const repoRoot = findNearestRepoRoot(candidate);
+    if (repoRoot) {
+      return repoRoot;
+    }
+  }
+  return resolve(dirname(memoryPath));
+}
 async function captureFileChanges(mind) {
   try {
     const memoryPath = mind.getMemoryPath();
-    const workDir = dirname(dirname(memoryPath));
+    const workDir = findRepoRoot(memoryPath);
     const allChangedFiles = [];
     let gitDiffContent = "";
     try {

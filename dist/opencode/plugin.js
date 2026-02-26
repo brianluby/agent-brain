@@ -9,8 +9,9 @@ import { tmpdir } from 'os';
 // src/opencode/plugin.ts
 
 // src/types.ts
+var DEFAULT_MEMORY_PATH = ".agent-brain/mind.mv2";
 var DEFAULT_CONFIG = {
-  memoryPath: ".agent-brain/mind.mv2",
+  memoryPath: DEFAULT_MEMORY_PATH,
   maxContextObservations: 20,
   maxContextTokens: 2e3,
   autoCompress: true,
@@ -70,7 +71,8 @@ async function withMemvidLock(lockPath, fn) {
   }
 }
 function defaultPlatformRelativePath(platform) {
-  const safePlatform = platform.replace(/[^a-z0-9_-]/gi, "-");
+  const normalizedPlatform = platform.trim().toLowerCase();
+  const safePlatform = normalizedPlatform.replace(/[^a-z0-9_-]/g, "-").replace(/^-+|-+$/g, "") || "unknown";
   return `.agent-brain/mind-${safePlatform}.mv2`;
 }
 function resolveInsideProject(projectDir, candidatePath) {
@@ -226,7 +228,7 @@ var Mind = class _Mind {
     const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
     const platform = detectPlatformFromEnv();
     const optIn = process.env.MEMVID_PLATFORM_PATH_OPT_IN === "1";
-    const legacyFallbacks = config.memoryPath === ".agent-brain/mind.mv2" ? [".claude/mind.mv2"] : [];
+    const legacyFallbacks = config.memoryPath === DEFAULT_MEMORY_PATH ? [".claude/mind.mv2"] : [];
     const pathPolicy = resolveMemoryPathPolicy({
       projectDir,
       platform,
@@ -1413,6 +1415,8 @@ var OBSERVED_TOOLS = /* @__PURE__ */ new Set([
 var ALWAYS_CAPTURE_TOOLS = /* @__PURE__ */ new Set(["Edit", "Write", "Update"]);
 var MIN_OUTPUT_LENGTH = 50;
 var MAX_OUTPUT_LENGTH = 2500;
+var MAX_SESSION_CACHE_SIZE = 500;
+var MAX_CALL_CACHE_PER_SESSION = 1e3;
 var TOOL_NAME_MAP = {
   read: "Read",
   edit: "Edit",
@@ -1426,7 +1430,38 @@ var TOOL_NAME_MAP = {
   task: "Task"
 };
 var seenSessionIntro = /* @__PURE__ */ new Set();
-var processedToolCalls = /* @__PURE__ */ new Set();
+var processedToolCallsBySession = /* @__PURE__ */ new Map();
+function addToLimitedSet(set, key, maxSize) {
+  if (set.has(key)) {
+    set.delete(key);
+  }
+  set.add(key);
+  while (set.size > maxSize) {
+    const oldest = set.values().next().value;
+    if (typeof oldest !== "string") {
+      break;
+    }
+    set.delete(oldest);
+  }
+}
+function touchSessionCallCache(sessionID) {
+  const existing = processedToolCallsBySession.get(sessionID);
+  if (existing) {
+    processedToolCallsBySession.delete(sessionID);
+    processedToolCallsBySession.set(sessionID, existing);
+    return existing;
+  }
+  const callSet = /* @__PURE__ */ new Set();
+  processedToolCallsBySession.set(sessionID, callSet);
+  while (processedToolCallsBySession.size > MAX_SESSION_CACHE_SIZE) {
+    const oldestSessionID = processedToolCallsBySession.keys().next().value;
+    if (typeof oldestSessionID !== "string") {
+      break;
+    }
+    processedToolCallsBySession.delete(oldestSessionID);
+  }
+  return callSet;
+}
 function toCanonicalToolName(toolID) {
   return TOOL_NAME_MAP[toolID.toLowerCase()] || null;
 }
@@ -1550,7 +1585,7 @@ var AgentBrainOpenCodePlugin = async ({ directory, project }) => {
       if (seenSessionIntro.has(input.sessionID)) {
         return;
       }
-      seenSessionIntro.add(input.sessionID);
+      addToLimitedSet(seenSessionIntro, input.sessionID, MAX_SESSION_CACHE_SIZE);
       const pathPolicy = resolveMemoryPathPolicy({
         projectDir: directory,
         platform: "opencode",
@@ -1595,15 +1630,14 @@ var AgentBrainOpenCodePlugin = async ({ directory, project }) => {
         id: `agent-brain-context-${Date.now()}`,
         type: "text",
         text: injected,
-        synthetic: true,
         sessionID: input.sessionID,
         messageID: output.message.id
       };
       output.parts.unshift(part);
     },
     "tool.execute.after": async (input, output) => {
-      const callKey = `${input.sessionID}:${input.callID}`;
-      if (processedToolCalls.has(callKey)) {
+      const sessionCallCache = touchSessionCallCache(input.sessionID);
+      if (sessionCallCache.has(input.callID)) {
         return;
       }
       const canonicalToolName = toCanonicalToolName(input.tool);
@@ -1668,7 +1702,7 @@ var AgentBrainOpenCodePlugin = async ({ directory, project }) => {
         tool: canonicalToolName,
         metadata
       });
-      processedToolCalls.add(callKey);
+      addToLimitedSet(sessionCallCache, input.callID, MAX_CALL_CACHE_PER_SESSION);
     },
     tool: {
       mind: tool({
@@ -1775,11 +1809,7 @@ var AgentBrainOpenCodePlugin = async ({ directory, project }) => {
         return;
       }
       seenSessionIntro.delete(sessionID);
-      for (const key of processedToolCalls) {
-        if (key.startsWith(`${sessionID}:`)) {
-          processedToolCalls.delete(key);
-        }
-      }
+      processedToolCallsBySession.delete(sessionID);
     }
   };
 };

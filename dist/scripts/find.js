@@ -5,7 +5,8 @@ import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 
 function defaultPlatformRelativePath(platform) {
-  const safePlatform = platform.replace(/[^a-z0-9_-]/gi, "-");
+  const normalizedPlatform = platform.trim().toLowerCase();
+  const safePlatform = normalizedPlatform.replace(/[^a-z0-9_-]/g, "-").replace(/^-+|-+$/g, "") || "unknown";
   return `.agent-brain/mind-${safePlatform}.mv2`;
 }
 function resolveInsideProject(projectDir, candidatePath) {

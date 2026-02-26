@@ -25,7 +25,10 @@ export interface MemoryPathPolicyResult {
 }
 
 function defaultPlatformRelativePath(platform: string): string {
-  const safePlatform = platform.replace(/[^a-z0-9_-]/gi, "-");
+  const normalizedPlatform = platform.trim().toLowerCase();
+  const safePlatform = normalizedPlatform
+    .replace(/[^a-z0-9_-]/g, "-")
+    .replace(/^-+|-+$/g, "") || "unknown";
   return `.agent-brain/mind-${safePlatform}.mv2`;
 }
 

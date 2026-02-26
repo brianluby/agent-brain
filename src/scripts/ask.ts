@@ -52,8 +52,8 @@ async function main() {
   const { memoryPath, migrationPrompt } = resolveScriptMemoryPath(projectDir);
 
   if (migrationPrompt) {
-    console.log("Legacy memory detected at .claude/mind.mv2.");
-    console.log(`Move it to .agent-brain/mind.mv2? Run: ${migrationPrompt}\n`);
+    console.log("Legacy memory detected; you can move it with the command below.");
+    console.log(`${migrationPrompt}\n`);
   }
 
   // Load SDK dynamically

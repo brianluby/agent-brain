@@ -5,7 +5,8 @@ import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 
 function defaultPlatformRelativePath(platform) {
-  const safePlatform = platform.replace(/[^a-z0-9_-]/gi, "-");
+  const normalizedPlatform = platform.trim().toLowerCase();
+  const safePlatform = normalizedPlatform.replace(/[^a-z0-9_-]/g, "-").replace(/^-+|-+$/g, "") || "unknown";
   return `.agent-brain/mind-${safePlatform}.mv2`;
 }
 function resolveInsideProject(projectDir, candidatePath) {
@@ -172,8 +173,8 @@ async function main() {
   const projectDir = process.env.CLAUDE_PROJECT_DIR || process.env.OPENCODE_PROJECT_DIR || process.cwd();
   const { memoryPath, migrationPrompt } = resolveScriptMemoryPath(projectDir);
   if (migrationPrompt) {
-    console.log("Legacy memory detected at .claude/mind.mv2.");
-    console.log(`Move it to .agent-brain/mind.mv2? Run: ${migrationPrompt}
+    console.log("Legacy memory detected; you can move it with the command below.");
+    console.log(`${migrationPrompt}
 `);
   }
   const { use, create } = await loadSDK();
