@@ -85,7 +85,7 @@ SCRIPT_DIR="$(CDPATH="" cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
 
 # Get feature paths
-eval $(get_feature_paths)
+eval "$(get_feature_paths)"
 
 # If paths-only mode, output paths and exit (skip validation)
 if $PATHS_ONLY; then
