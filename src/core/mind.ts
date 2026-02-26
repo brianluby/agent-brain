@@ -300,43 +300,61 @@ export class Mind {
   private async searchUnlocked(query: string, limit: number): Promise<MemorySearchResult[]> {
     const results = await this.memvid.find(query, { k: limit, mode: "lex" });
 
-    const frames = Array.isArray(results?.hits)
-      ? results.hits
-      : Array.isArray(results?.frames)
-        ? results.frames
-        : [];
+    const frames = this.toSearchFrames(results);
 
     return frames.map((frame: any) => {
-      const toolTag = Array.isArray(frame.tags)
-        ? frame.tags.find((tag: unknown) => typeof tag === "string" && tag.startsWith("tool:"))
-        : undefined;
+      const rawTags = Array.isArray(frame.tags)
+        ? frame.tags.filter((tag: unknown): tag is string => typeof tag === "string")
+        : [];
+      const prefixedToolTag = rawTags.find((tag) => tag.startsWith("tool:"));
 
       const labels = Array.isArray(frame.labels)
         ? frame.labels.filter((label: unknown): label is string => typeof label === "string")
         : [];
+
+      const metadata = frame.metadata && typeof frame.metadata === "object"
+        ? frame.metadata as Record<string, unknown>
+        : {};
 
       const observationType = this.extractObservationType({
         label: frame.label,
         labels,
       }) || "discovery";
 
+      const legacyToolTag = rawTags.find((tag) => {
+        if (tag.startsWith("tool:") || tag.startsWith("session:")) {
+          return false;
+        }
+        if (!/[A-Z]/.test(tag)) {
+          return false;
+        }
+        return tag.toLowerCase() !== observationType;
+      });
+
+      const tool = typeof prefixedToolTag === "string"
+        ? prefixedToolTag.replace(/^tool:/, "")
+        : typeof metadata.tool === "string"
+          ? metadata.tool
+          : legacyToolTag;
+
       const timestamp = this.normalizeTimestampMs(
-        frame.metadata?.timestamp
+        metadata.timestamp
         || frame.timestamp
         || (typeof frame.created_at === "string" ? Date.parse(frame.created_at) : 0)
       );
 
       return {
       observation: {
-        id: String(frame.metadata?.observationId || frame.frame_id || generateId()),
+        id: String(metadata.observationId || frame.frame_id || generateId()),
         timestamp,
         type: observationType,
-        tool: typeof toolTag === "string" ? toolTag.replace(/^tool:/, "") : undefined,
+        tool,
         summary: frame.title?.replace(/^\[.*?\]\s*/, "") || frame.snippet || "",
         content: frame.text || frame.snippet || "",
         metadata: {
+          ...metadata,
           labels,
-          tags: frame.tags,
+          tags: rawTags,
         },
       },
       score: frame.score || 0,
@@ -347,6 +365,16 @@ export class Mind {
 
   private toTimelineFrames(timelineResult: any): any[] {
     return Array.isArray(timelineResult) ? timelineResult : (timelineResult.frames || []);
+  }
+
+  private toSearchFrames(searchResult: any): any[] {
+    if (Array.isArray(searchResult?.hits)) {
+      return searchResult.hits;
+    }
+    if (Array.isArray(searchResult?.frames)) {
+      return searchResult.frames;
+    }
+    return [];
   }
 
   private normalizeTimestampMs(value: unknown): number {
@@ -588,30 +616,51 @@ export class Mind {
 
       const frames = this.toTimelineFrames(timeline);
 
-      const recentObservations = await Promise.all(frames.map(async (frame: any) => {
-        const frameInfo = await this.memvid.getFrameInfo(frame.frame_id);
-        const labels = Array.isArray(frameInfo?.labels) ? frameInfo.labels : [];
-        const tags = Array.isArray(frameInfo?.tags) ? frameInfo.tags : [];
-        const toolTag = tags.find((tag) => typeof tag === "string" && tag.startsWith("tool:"));
-        const ts = this.normalizeTimestampMs(frameInfo?.timestamp || frame.timestamp || 0);
-        const observationType = this.extractObservationType({
-          label: labels[0],
-          labels,
-        }) || "discovery";
+      const recentObservations: Observation[] = [];
+      const FRAME_INFO_BATCH_SIZE = 20;
+      for (let start = 0; start < frames.length; start += FRAME_INFO_BATCH_SIZE) {
+        const batch = frames.slice(start, start + FRAME_INFO_BATCH_SIZE);
+        const frameInfos = await Promise.all(batch.map(async (frame: any) => {
+          try {
+            return await this.memvid.getFrameInfo(frame.frame_id);
+          } catch {
+            return null;
+          }
+        }));
 
-        return {
-          id: String(frame.frame_id),
-          timestamp: ts,
-          type: observationType,
-          tool: typeof toolTag === "string" ? toolTag.replace(/^tool:/, "") : undefined,
-          summary: frameInfo?.title?.replace(/^\[.*?\]\s*/, "") || frame.preview?.slice(0, 100) || "",
-          content: frame.preview || "",
-          metadata: {
+        for (let index = 0; index < batch.length; index++) {
+          const frame = batch[index];
+          const frameInfo = frameInfos[index];
+          const labels = Array.isArray(frameInfo?.labels) ? frameInfo.labels : [];
+          const tags = Array.isArray(frameInfo?.tags) ? frameInfo.tags : [];
+          const metadata = frameInfo?.metadata && typeof frameInfo.metadata === "object"
+            ? frameInfo.metadata as Record<string, unknown>
+            : {};
+          const toolTag = tags.find((tag) => typeof tag === "string" && tag.startsWith("tool:"));
+          const ts = this.normalizeTimestampMs(frameInfo?.timestamp || frame.timestamp || 0);
+          const observationType = this.extractObservationType({
+            label: labels[0],
             labels,
-            tags,
-          },
-        } as Observation;
-      }));
+            metadata,
+          }) || "discovery";
+
+          recentObservations.push({
+            id: String(metadata.observationId || frame.metadata?.observationId || frame.frame_id),
+            timestamp: ts,
+            type: observationType,
+            tool: typeof toolTag === "string"
+              ? toolTag.replace(/^tool:/, "")
+              : (typeof metadata.tool === "string" ? metadata.tool : undefined),
+            summary: frameInfo?.title?.replace(/^\[.*?\]\s*/, "") || frame.preview?.slice(0, 100) || "",
+            content: frame.preview || "",
+            metadata: {
+              ...metadata,
+              labels,
+              tags,
+            },
+          });
+        }
+      }
 
       // Get relevant memories if query provided
       let relevantMemories: Observation[] = [];
@@ -624,9 +673,7 @@ export class Mind {
         k: 20,
         mode: "lex",
       });
-      const summaryHits = Array.isArray(summarySearch?.hits)
-        ? summarySearch.hits
-        : [];
+      const summaryHits = this.toSearchFrames(summarySearch);
       const seenSessionIds = new Set<string>();
       const sessionSummaries: SessionSummary[] = [];
 
@@ -761,9 +808,7 @@ export class Mind {
         k: 50,
         mode: "lex",
       });
-      const summaryHits = Array.isArray(summarySearch?.hits)
-        ? summarySearch.hits
-        : [];
+      const summaryHits = this.toSearchFrames(summarySearch);
       for (const hit of summaryHits) {
         const summary = this.extractSessionSummaryFromSearchHit(hit);
         if (summary) {

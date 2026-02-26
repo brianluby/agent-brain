@@ -3,10 +3,12 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  rmSync,
   renameSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
+import lockfile from "proper-lockfile";
 import { generateId } from "../utils/helpers.js";
 import {
   DIAGNOSTIC_RETENTION_DAYS,
@@ -59,7 +61,9 @@ function isDiagnosticRecord(value: unknown): value is AdapterDiagnostic {
     typeof record.timestamp === "number" &&
     typeof record.platform === "string" &&
     typeof record.errorType === "string" &&
-    (record.fieldNames === undefined || Array.isArray(record.fieldNames)) &&
+    (record.fieldNames === undefined ||
+      (Array.isArray(record.fieldNames)
+        && record.fieldNames.every((name) => typeof name === "string"))) &&
     (record.severity === "warning" || record.severity === "error") &&
     record.redacted === true &&
     typeof record.retentionDays === "number" &&
@@ -77,22 +81,28 @@ class DiagnosticPersistence {
 
   constructor(filePath: string) {
     this.filePath = filePath;
-    this.records = this.loadFromDisk();
+    this.records = pruneExpired(this.loadFromDisk());
   }
 
   append(record: AdapterDiagnostic, now = Date.now()): void {
-    const next = pruneExpired([...this.records, record], now);
-    this.records = next;
-    this.persist(next);
+    this.withFileLock(() => {
+      const latest = this.loadFromDisk();
+      const next = pruneExpired([...latest, record], now);
+      this.persist(next);
+      this.records = next;
+    });
   }
 
   list(now = Date.now()): AdapterDiagnostic[] {
-    const pruned = pruneExpired(this.records, now);
-    if (pruned.length !== this.records.length) {
+    return this.withFileLock(() => {
+      const latest = this.loadFromDisk();
+      const pruned = pruneExpired(latest, now);
+      if (pruned.length !== latest.length) {
+        this.persist(pruned);
+      }
       this.records = pruned;
-      this.persist(pruned);
-    }
-    return [...pruned];
+      return [...pruned];
+    });
   }
 
   private loadFromDisk(): AdapterDiagnostic[] {
@@ -111,22 +121,36 @@ class DiagnosticPersistence {
         return [];
       }
 
-      const validRecords = parsed.filter(isDiagnosticRecord);
-      const pruned = pruneExpired(validRecords);
-      if (pruned.length !== validRecords.length) {
-        this.persist(pruned);
-      }
-      return pruned;
+      return parsed.filter(isDiagnosticRecord);
     } catch {
       return [];
+    }
+  }
+
+  private withFileLock<T>(fn: () => T): T {
+    mkdirSync(dirname(this.filePath), { recursive: true });
+    const release = lockfile.lockSync(this.filePath, { realpath: false });
+    try {
+      return fn();
+    } finally {
+      release();
     }
   }
 
   private persist(records: AdapterDiagnostic[]): void {
     mkdirSync(dirname(this.filePath), { recursive: true });
     const tmpPath = `${this.filePath}.tmp-${process.pid}-${Date.now()}`;
-    writeFileSync(tmpPath, `${JSON.stringify(records, null, 2)}\n`, "utf-8");
-    renameSync(tmpPath, this.filePath);
+    try {
+      writeFileSync(tmpPath, `${JSON.stringify(records, null, 2)}\n`, "utf-8");
+      try {
+        renameSync(tmpPath, this.filePath);
+      } catch {
+        rmSync(this.filePath, { force: true });
+        renameSync(tmpPath, this.filePath);
+      }
+    } finally {
+      rmSync(tmpPath, { force: true });
+    }
   }
 }
 
