@@ -50,13 +50,14 @@ jobs:
             ## Installation
 
             ```bash
-            claude plugin install memvid-mind
+            # In Claude Code
+            /plugin add marketplace brianluby/Agent-brain
             ```
 
             Or via npm:
 
             ```bash
-            npm install memvid-mind
+            npm install @brianluby/agent-brain
             ```
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

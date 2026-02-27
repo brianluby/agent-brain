@@ -1,5 +1,5 @@
 {
-  "description": "Memvid Mind - Persistent memory for Claude Code",
+  "description": "Agent Brain - Persistent memory for Claude Code",
   "hooks": {
     "SessionStart": [
       {

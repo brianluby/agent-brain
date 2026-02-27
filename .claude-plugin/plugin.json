@@ -1,12 +1,12 @@
 {
   "name": "mind",
   "description": "Claude Mind - Give Claude photographic memory in ONE portable file. Share, version, and transfer your Claude's brain.",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "author": {
-    "name": "Memvid",
-    "url": "https://memvid.com"
+    "name": "Agent Brain",
+    "url": "https://github.com/brianluby/agent-brain"
   },
   "repository": "https://github.com/brianluby/Agent-brain",
-  "homepage": "https://memvid.com",
+  "homepage": "https://github.com/brianluby/agent-brain",
   "license": "MIT"
 }

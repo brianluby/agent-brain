@@ -1,6 +1,6 @@
 {
   "name": "@brianluby/agent-brain",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Give Claude Code photographic memory in ONE portable file",
   "type": "module",
   "main": "dist/opencode/plugin.js",
@@ -51,19 +51,19 @@
     "memory",
     "ai-memory",
     "context-persistence",
-    "memvid",
+    "agent-brain",
     "portable-memory",
     "persistent-memory",
     "llm-memory",
     "ai-assistant"
   ],
-  "author": "Memvid <hello@memvid.com>",
+  "author": "Brian Luby",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/brianluby/Agent-brain.git"
   },
-  "homepage": "https://memvid.com",
+  "homepage": "https://github.com/brianluby/agent-brain",
   "bugs": {
     "url": "https://github.com/brianluby/Agent-brain/issues"
   },

@@ -1,4 +1,4 @@
-# Contributing to memvid-mind
+# Contributing to Agent Brain
 
 Thanks for your interest in contributing!
 
@@ -6,8 +6,8 @@ Thanks for your interest in contributing!
 
 ```bash
 # Clone the repo
-git clone https://github.com/Memvid/memvid-mind.git
-cd memvid-mind
+git clone https://github.com/brianluby/agent-brain.git
+cd agent-brain
 
 # Install dependencies
 npm install
@@ -22,7 +22,7 @@ npm test
 ## Project Structure
 
 ```
-memvid-mind/
+agent-brain/
 ├── src/
 │   ├── core/           # Mind engine
 │   ├── hooks/          # Claude Code hooks
@@ -60,4 +60,4 @@ The CI will build and publish to npm automatically.
 
 ## Questions?
 
-Open an issue or reach out at hello@memvid.com
+Open an issue in this repository.

@@ -172,7 +172,7 @@ Or just ask naturally: *"mind stats"*, *"search my memory for auth bugs"*, etc.
 
 ## OpenCode Support
 
-Memvid Mind now supports the same core memory lifecycle through a platform adapter model.
+Agent Brain supports the same core memory lifecycle through a platform adapter model.
 
 - Claude and OpenCode sessions can share project memory continuity.
 - Unknown or incompatible platforms fail open (session continues, memory capture safely skips).
@@ -183,20 +183,7 @@ Memvid Mind now supports the same core memory lifecycle through a platform adapt
 
 ## CLI (Optional)
 
-For power users who want direct access to their memory file:
-
-```bash
-npm install -g memvid-cli
-```
-
-```bash
-memvid stats .agent-brain/mind.mv2           # view memory stats
-memvid find .agent-brain/mind.mv2 "auth"     # search memories
-memvid ask .agent-brain/mind.mv2 "why JWT?"  # ask questions
-memvid timeline .agent-brain/mind.mv2        # view timeline
-```
-
-[Full CLI reference →](https://docs.memvid.com/cli/cheat-sheet)
+No separate CLI install is required. Use the built-in memory commands in Claude Code (`/mind ...`) or OpenCode (`/mind-* ...`) for direct access.
 
 <br />
 
@@ -236,7 +223,7 @@ Sub-millisecond. Native Rust core. Searches 10K+ memories in <1ms.
 
 <div align="center">
 
-Built on **[memvid](https://github.com/brianluby/memvid)** - the single-file memory engine
+Built as a local-first, single-file memory plugin for Claude Code and OpenCode.
 
 <br />
 
