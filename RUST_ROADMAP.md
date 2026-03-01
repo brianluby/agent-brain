@@ -4,6 +4,53 @@ This roadmap defines the phased plan for rewriting **Agent Brain** (currently Ty
 
 ---
 
+## Storage: Direct Memvid Rust Integration (No JSONL)
+
+The Memvid SDK (`@memvid/sdk`) is **already built on Rust** — the `@memvid/sdk-linux-x64-gnu` package ships a native ELF shared object (`memvid_sdk.node`) compiled from Rust via N-API. The JS SDK is a thin wrapper over these native calls.
+
+Since the core engine is Rust, the Rust rewrite of Agent Brain will **link directly against the Memvid Rust crate** (or its C-ABI / `libmemvid` library), bypassing the N-API/JS layer entirely. This means:
+
+- **No intermediate JSONL format** — we write `.mv2` files natively from day one
+- **Full `.mv2` compatibility** — files created by the Rust version are identical to those from the TS version
+- **Zero migration burden** — existing `.mv2` memory files work without conversion
+- **Access to the full native API** — `put`, `putMany`, `find`, `ask`, `timeline`, `stats`, `seal`, `getFrameInfo`, `view`, `remove`, sessions, and more
+
+### Memvid API Surface Used by Agent Brain
+
+From `src/core/mind.ts`, Agent Brain uses this subset of the Memvid SDK:
+
+| Memvid Method | Agent Brain Usage |
+|---------------|-------------------|
+| `create(path, "basic")` | Create new `.mv2` file |
+| `use("basic", path)` | Open existing `.mv2` file |
+| `mv.put({ title, label, text, metadata, tags })` | Store observations and session summaries |
+| `mv.find(query, { k, mode: "lex" })` | Lexical search for memories |
+| `mv.ask(question, { k, mode: "lex" })` | Question answering |
+| `mv.timeline({ limit, reverse })` | Get recent observations for context |
+| `mv.getFrameInfo(frameId)` | Get frame metadata (labels, tags, timestamps) |
+| `mv.stats()` | Get frame count, file size |
+| `mv.seal()` | Close file (implicit) |
+
+### Integration Strategy
+
+```
+Option A (preferred): Depend on memvid as a Cargo crate
+  - Add `memvid = "2.x"` to Cargo.toml
+  - Call Rust API directly: memvid::open(), handle.put(), handle.find(), etc.
+  - Best performance, type safety, and compile-time checks
+
+Option B (fallback): Link against libmemvid shared library
+  - Use the same .node/.so binary via FFI (bindgen or manual extern "C")
+  - Requires discovering the N-API entry points or a C-ABI export
+  - More fragile, but works if the crate isn't published separately
+
+Option C (bridge): Shell out to memvid CLI
+  - If memvid ships a CLI binary, invoke it as a subprocess
+  - Simplest but highest overhead per operation
+```
+
+---
+
 ## Current TypeScript Architecture (Reference)
 
 | Layer | Key Files | Responsibility |
@@ -42,6 +89,7 @@ This roadmap defines the phased plan for rewriting **Agent Brain** (currently Ty
 - [ ] Set up CI (GitHub Actions): `cargo fmt --check`, `cargo clippy`, `cargo test`, `cargo build --release`
 - [ ] Choose and pin Rust edition (2024) and MSRV policy
 - [ ] Add workspace-level dependencies:
+  - `memvid` — native `.mv2` storage engine (Rust crate)
   - `serde` / `serde_json` — serialization
   - `thiserror` — error types
   - `tokio` — async runtime
@@ -63,8 +111,8 @@ Equivalent to: project scaffolding, `tsconfig.json`, `tsup.config.ts`, `package.
 - [ ] `ObservationType` — enum with 10 variants: `Discovery`, `Decision`, `Problem`, `Solution`, `Pattern`, `Warning`, `Success`, `Refactor`, `Bugfix`, `Feature`
 - [ ] `Observation` — struct with `observation_id`, `timestamp`, `obs_type`, `tool`, `summary`, `content`, `metadata`
 - [ ] `ObservationMetadata` — struct with `files`, `platform`, `project_identity_key`, `compressed`, `session_id`, and extensible `extra: HashMap<String, serde_json::Value>`
-- [ ] `SessionSummary` — struct with session-level aggregation fields
-- [ ] `InjectedContext` — struct for context returned at session start
+- [ ] `SessionSummary` — struct with session-level aggregation fields (`id`, `start_time`, `end_time`, `observation_count`, `key_decisions`, `files_modified`, `summary`)
+- [ ] `InjectedContext` — struct for context returned at session start (`recent_observations`, `relevant_memories`, `session_summaries`, `token_count`)
 - [ ] `MindConfig` — struct with defaults:
   - `memory_path`: `.agent-brain/mind.mv2`
   - `max_context_observations`: 20
@@ -72,7 +120,7 @@ Equivalent to: project scaffolding, `tsconfig.json`, `tsup.config.ts`, `package.
   - `auto_compress`: true
   - `min_confidence`: 0.6
   - `debug`: false
-- [ ] `MindStats` — struct for stats output
+- [ ] `MindStats` — struct for stats output (`total_observations`, `total_sessions`, `oldest_memory`, `newest_memory`, `file_size`, `top_types`)
 - [ ] `HookInput` / `HookOutput` — structs matching the JSON hook protocol
 - [ ] `AgentBrainError` — unified error enum using `thiserror`
 - [ ] Environment variable resolution helper (`MEMVID_PLATFORM`, `MEMVID_MIND_DEBUG`, etc.)
@@ -85,34 +133,58 @@ Equivalent to: `src/types.ts`, config defaults in `src/core/mind.ts`, env-var ha
 
 ## Phase 2 — Core Memory Engine (`crates/core`)
 
-**Goal:** Implement the `Mind` struct — the heart of the system.
+**Goal:** Implement the `Mind` struct — the heart of the system — backed directly by the Memvid Rust crate.
 
-### 2a — Storage Backend
-- [ ] Define a `MemoryBackend` trait abstracting storage (read, write, search)
-- [ ] Implement an initial **JSON-lines backend** (one JSON object per line in a `.jsonl` file) for development and testing
-- [ ] Plan for a Memvid-compatible backend once Rust bindings or equivalent codec exist (feature-flagged)
-- [ ] File-based backup management — keep 3 most recent backups, rotate on write
-- [ ] Corrupted-file detection and recovery (checksum header or magic bytes)
+### 2a — Memvid Integration
+- [ ] Depend on the `memvid` Rust crate for native `.mv2` file operations
+- [ ] Wrap Memvid's handle type in a `Mind` struct that owns the connection
+- [ ] `Mind::open(config)` — resolve path, ensure directory exists, call `memvid::open()` or `memvid::create()` with `mode: "basic"`
+- [ ] Corrupted-file detection on open — catch deserialization/validation errors, rename to `.backup-{timestamp}`, recreate fresh
+- [ ] File-based backup management — keep 3 most recent `.backup-*` files, prune older ones
+- [ ] Max file size guard (100MB) — reject likely-corrupted files before attempting open
 
 ### 2b — Mind API
 - [ ] `Mind::open(config) -> Result<Mind>` — singleton-like initialization with file locking
-- [ ] `mind.remember(obs_type, summary, content, metadata) -> Result<ObservationId>`
-- [ ] `mind.search(query, limit) -> Result<Vec<Observation>>` — lexical/substring search
-- [ ] `mind.ask(question) -> Result<String>` — search + format answer context
-- [ ] `mind.get_context(query) -> Result<InjectedContext>` — retrieve recent/relevant observations up to token budget
-- [ ] `mind.save_session_summary() -> Result<()>` — end-of-session aggregation
-- [ ] `mind.stats() -> Result<MindStats>` — total count, session count, timespan, type breakdown
-- [ ] Token estimation utility (port `estimateTokens` — character-based heuristic)
+- [ ] `mind.remember(obs_type, summary, content, metadata) -> Result<String>`
+  - Calls `memvid.put()` with: `title: "[{type}] {summary}"`, `label: type`, `text: content`, `metadata: { observationId, timestamp, tool, sessionId, ... }`, `tags: [type, "session:{id}", "tool:{name}"]`
+- [ ] `mind.search(query, limit) -> Result<Vec<MemorySearchResult>>`
+  - Calls `memvid.find(query, { k: limit, mode: "lex" })`
+  - Parses `hits` array: extracts observation type from labels/label/metadata, normalizes timestamps (sec→ms heuristic at 4102444800 threshold), extracts tool from `tool:` tag prefix or metadata
+- [ ] `mind.ask(question) -> Result<String>`
+  - Calls `memvid.ask(question, { k: 5, mode: "lex" })`
+  - Returns `answer` field or "No relevant memories found."
+- [ ] `mind.get_context(query) -> Result<InjectedContext>`
+  - Calls `memvid.timeline({ limit: max_context_observations, reverse: true })` for recent observations
+  - Calls `memvid.getFrameInfo(frame_id)` in batches of 20 for metadata enrichment
+  - If `query` provided, also calls `search()` for relevant memories
+  - Searches for "Session Summary" via `find()` to collect up to 5 session summaries
+  - Builds token-budgeted context string
+- [ ] `mind.save_session_summary(decisions, files, summary) -> Result<String>`
+  - Calls `memvid.put()` with `label: "session"`, `tags: ["session", "summary", "session:{id}"]`, text is JSON-serialized `SessionSummary`
+- [ ] `mind.stats() -> Result<MindStats>`
+  - Calls `memvid.stats()` for frame count and file size
+  - Calls `memvid.timeline({ limit: total_frames })` to iterate all frames
+  - Extracts session IDs, observation types, and timestamp ranges from frame previews
+  - Caches result keyed on frame count
+- [ ] `mind.session_id() -> &str`
+- [ ] `mind.memory_path() -> &Path`
+- [ ] `mind.is_initialized() -> bool`
+- [ ] Token estimation utility (port `estimateTokens` — character-based heuristic: `chars / 4`)
 
 ### 2c — Concurrency & Locking
 - [ ] Cross-process file locking (port `memvid-lock.ts`)
-  - Use `fs2` or `fd-lock` crate for advisory file locks
+  - Use `fs2` or `fd-lock` crate for advisory file locks on `{path}.lock`
   - Retry with exponential backoff (matching TS behavior)
+  - `with_lock<F, T>(lock_path, f: F) -> Result<T>` wrapper
 - [ ] Ensure `Mind` is `Send + Sync` safe for multi-threaded consumers
 - [ ] Concurrent-writer regression tests (equivalent to `mind-lock.test.ts`)
 
+### 2d — Singleton Pattern
+- [ ] Module-level `get_mind(config) -> Result<Arc<Mind>>` — lazy singleton for hook processes
+- [ ] `reset_mind()` — for testing
+
 ### Parity target
-Equivalent to: `src/core/mind.ts`, `src/utils/memvid-lock.ts`, `src/utils/helpers.ts`
+Equivalent to: `src/core/mind.ts` (880 lines), `src/utils/memvid-lock.ts`, `src/utils/helpers.ts`
 
 ---
 
@@ -182,15 +254,14 @@ Equivalent to: entire `src/platforms/` directory (contract, pipeline, registry, 
 Each hook is a small binary that reads JSON from stdin and writes JSON to stdout.
 
 ### 5a — smart-install
-- [ ] Detect missing dependencies
-- [ ] Run install command (`cargo build` or equivalent)
-- [ ] Track installation state with `.install-version` marker file
+- [ ] For the Rust version this becomes a no-op or version-check (no `npm install` needed — single binary)
+- [ ] Track installation state with `.install-version` marker file for self-update scenarios
 - [ ] Fail-open — never block session startup
 
 ### 5b — session-start
 - [ ] Initialize `Mind` for the project
 - [ ] Detect platform and memory location
-- [ ] Inject recent context (observations, session summaries)
+- [ ] Inject recent context (observations, session summaries) via `mind.get_context()`
 - [ ] Suggest migration from legacy `.claude/mind.mv2` path
 - [ ] Show available commands/skills
 
@@ -276,7 +347,7 @@ Equivalent to: `.claude-plugin/`, `skills/`, `commands/`, `package.json` distrib
 - [ ] **Concurrency tests** — parallel writers, lock contention, recovery from stale locks
 - [ ] **Performance benchmarks** — memory query latency, compression throughput, startup time
   - Target: faster than TypeScript version on all benchmarks
-- [ ] **Compatibility tests** — read `.mv2` / `.jsonl` files written by TypeScript version
+- [ ] **Compatibility tests** — read `.mv2` files written by the TypeScript version, verify identical results for search/timeline/stats
 - [ ] **Fuzz testing** — malformed inputs to compression, hook JSON parsing, and search queries
 - [ ] CI gates: `cargo fmt`, `cargo clippy -- -D warnings`, `cargo test`, `cargo bench`
 
@@ -287,13 +358,14 @@ Equivalent to: `src/__tests__/` (48 test files), plus Rust-specific quality impr
 
 ## Phase 10 — Migration & Backwards Compatibility
 
-**Goal:** Allow users to seamlessly switch from TypeScript to Rust.
+**Goal:** Seamless drop-in replacement for the TypeScript version.
 
-- [ ] Memory file format reader for existing `.mv2` files (if Memvid SDK has a documented format, or via FFI to the JS SDK)
-- [ ] Migration CLI: `agent-brain migrate` — converts legacy memory to Rust-native format
-- [ ] Side-by-side mode: Rust reads memories written by TS version and vice versa (shared `.jsonl` or `.mv2`)
-- [ ] Configuration migration — honor existing env vars and `.agent-brain/` directory structure
-- [ ] Document breaking changes and migration steps
+- [ ] **Zero-migration `.mv2` files** — Rust version reads/writes the same `.mv2` format natively (no conversion needed)
+- [ ] **Configuration compatibility** — honor all existing env vars (`MEMVID_PLATFORM`, `MEMVID_MIND_DEBUG`, `MEMVID_PLATFORM_MEMORY_PATH`, `MEMVID_PLATFORM_PATH_OPT_IN`, `CLAUDE_PROJECT_DIR`, `OPENCODE_PROJECT_DIR`)
+- [ ] **Directory structure compatibility** — use identical `.agent-brain/` directory layout
+- [ ] **Legacy path migration** — detect `.claude/mind.mv2` and suggest move to `.agent-brain/mind.mv2`
+- [ ] **Side-by-side testing** — verify Rust and TS versions produce identical search results for the same `.mv2` file
+- [ ] Document the switch: update `plugin.json` to point hook paths at Rust binaries instead of `dist/hooks/*.js`
 
 ---
 
@@ -302,7 +374,7 @@ Equivalent to: `src/__tests__/` (48 test files), plus Rust-specific quality impr
 ```
 Phase 0 (Bootstrap)
   └─► Phase 1 (Types)
-        ├─► Phase 2 (Core Engine)
+        ├─► Phase 2 (Core Engine + Memvid)
         │     ├─► Phase 3 (Compression)
         │     │     └─► Phase 5 (Hooks) ──► Phase 8 (Packaging)
         │     └─► Phase 6 (CLI)
@@ -311,7 +383,7 @@ Phase 0 (Bootstrap)
               └─► Phase 7 (OpenCode Plugin)
 
 Phase 9 (Testing) runs continuously from Phase 1 onward
-Phase 10 (Migration) runs after Phase 2 is stable
+Phase 10 (Migration) is trivial — same .mv2 format, just verify compatibility
 ```
 
 ---
@@ -320,6 +392,7 @@ Phase 10 (Migration) runs after Phase 2 is stable
 
 | Decision | Rationale |
 |----------|-----------|
+| **Direct Memvid Rust crate dependency** | The Memvid SDK is already Rust — we call the same engine directly instead of going through N-API/JS. Same `.mv2` format, zero migration. |
 | **Cargo workspace with multiple crates** | Mirrors the TS module structure, enables independent compilation and testing |
 | **Trait-based adapter system** | Rust traits replace TypeScript interfaces; enables static dispatch for performance |
 | **`thiserror` for errors** | Type-safe error hierarchy replaces scattered `try/catch` |
@@ -327,16 +400,16 @@ Phase 10 (Migration) runs after Phase 2 is stable
 | **`tokio` async runtime** | Async file I/O and potential future network operations |
 | **`fs2` / `fd-lock` for file locking** | Cross-platform advisory locks replacing `proper-lockfile` |
 | **Binary hooks (not scripts)** | Each hook compiles to a native binary — faster cold start than Node.js |
-| **JSONL as initial storage format** | Simple, appendable, human-readable; upgrade path to Memvid later |
-| **Feature flags for optional backends** | `--features memvid` to enable Memvid codec when bindings exist |
 
 ---
 
 ## Rust Advantages Over TypeScript Version
 
 - **Startup time**: Native binaries start in <5ms vs ~200ms for Node.js — critical for hooks that run on every tool use
+- **No N-API overhead**: Calls the Memvid Rust engine directly instead of JS→N-API→Rust roundtrip
 - **Memory safety**: No null/undefined errors, no uncaught promise rejections
 - **Concurrency**: Fearless concurrency with Rust's ownership model vs manual locking
 - **Single binary distribution**: No npm install, no node_modules, no version conflicts
 - **Performance**: Compression and search operations will be significantly faster
 - **Type safety**: Algebraic data types make illegal states unrepresentable at compile time
+- **Same `.mv2` format**: Full backwards compatibility with existing memory files — no migration needed
